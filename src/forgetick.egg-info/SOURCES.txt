@@ -1,0 +1,7 @@
+README.md
+pyproject.toml
+src/forgetick/__init__.py
+src/forgetick.egg-info/PKG-INFO
+src/forgetick.egg-info/SOURCES.txt
+src/forgetick.egg-info/dependency_links.txt
+src/forgetick.egg-info/top_level.txt

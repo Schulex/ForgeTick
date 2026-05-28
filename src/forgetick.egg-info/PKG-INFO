@@ -1,0 +1,11 @@
+Metadata-Version: 2.4
+Name: forgetick
+Version: 0.0.1
+Summary: Open-source node-based trading framework (placeholder)
+Author: Florian Schulé
+License: AGPL-3.0
+Requires-Python: >=3.11
+Description-Content-Type: text/markdown
+
+# ForgeTick
+Open-source node-based trading framework, PyPI package coming soon !

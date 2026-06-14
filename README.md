@@ -1,2 +1,2 @@
 # ForgeTick
-Open-source node-based trading framework, PyPI package coming soon !
+Open-source node-based trading framework

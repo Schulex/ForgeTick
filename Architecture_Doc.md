@@ -37,7 +37,26 @@ version : MVP
 
 The only two sources of truth are the server for the execution state and the broker for the market state. Everything else is a client or a service. Nothing else owns state.
 
-## Execution model
+## Execution model & nodes
+
+    ┌───────────────────────────────────────────┐
+    │ WorkflowManager                           │
+    └───────────┬────────────────────┬──────────┘
+                ▼                    ▼
+    ┌───────────────────────┐       ...
+    │ WorkflowRunner        │
+    └─────┬───────────┬─────┘
+          ▼           ▼
+    ┌───────────┐    ...
+    │ Engine    │
+    └───────────┘
+
+To execute a workflow there are two distinct job :
+
+- The engine knows how to run a graph of nodes: what order to execute them in, how to pass data along the wires. It knows nothing about what any individual node does.
+- The node knows how to do one thing: compute an SMA, place an order, compare two numbers. It knows nothing about the graph it lives in.
+
+It's really important to keep this two job apart, the whole architecture rests on keeping them apart.
 
 ## Lifecycle & control flow
 

@@ -158,6 +158,7 @@ A concrete node is small, example of node :
 ### The core tension
 
 Trading software have two requirements that fight each other:
+
 - Stoping fast, "stopping soon" isn't acceptable
 - Stoping safe, always stop in a way to know the truth
 
@@ -165,7 +166,9 @@ Almost every decision below is about honoring both. The resolution is: stopping 
 
 ### WorkflowRunner lifecycle states
 
-The WorkflowRunner is a small state machine
+The WorkflowRunner is a state machine
+
+- IDLE — wait
 - RUNNING — scheduler is ticking, engine runs the graph each tick
 - STOPPING — asked to stop; finishing safely, cancelling orders
 - STOPPED — fully halted, state saved
@@ -173,7 +176,37 @@ The WorkflowRunner is a small state machine
 
 The WorkflowManager tracks every WorkflowRunner's state. That collection of states is what status returns and what the Running Workflows panel renders.
 
+### Graceful stop
+
+The stop command or the stop button does not violently abort anything, it set a flag. this flag is read between each node, never mid-node. This insure that a node is always fully run or not started. This is to insure to NOT stop a node between a placed order and recording the placed order in the SQLite. A node is atomic by construction. shutdown() then cancels that workflow's open orders at the broker and marks STOPPED.
+
+### Kill switch
+
+The kill switch is graceful-stop applied to every runner at once.
+
+### Two sources of truth
+
+There are two sources of truth. The backend server own the execution state of workflows. The broker own the market state, what positions and orders actually exist.
+
+### What stop/kill actually cancel
+
+When the stop button, stop command, kill switch or the kill command is used. The app cancel pending/resting orders (limit orders sitting on the book, not yet filled). It does NOT liquidate positions (assets already owned).
+
+### The full control-flow path
+
+    CLI:  forgetick stop sma-cross
+    → POST /workflows/sma-cross/stop
+        → WorkflowManager.stop("sma-cross")
+            → runner.stop_requested = True
+            → (finishes current node) → cancels its open orders → STOPPED
+        → server broadcasts new state over WebSocket
+    → GUI's Running Workflows panel updates instantly; CLI status reflects it
+
 ## Persistence & recovery
+
+Clean shutdown
+Unclean shutdown
+reconcile market state against the broker,
 
 ## Broker layer
 

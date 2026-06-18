@@ -93,7 +93,7 @@ It's really important to keep this two job apart, the whole architecture rests o
 
 The execution model is layered in three layers.
 
-The deepest layer is the engine layer, this layer execute the nodes in a trigger domains (in a branch) of a workflows. A workflow can have multiple trigger domains, this means multiple engine per workflows. The second layer is the WorkflowRunner layer, this layer manage and run every engine in a workflow. On top of this, multiple workflows can run in parallel. The third and shallowest layer is the WorkflowManager layer, this layer manage every running workflows.
+The deepest layer is the engine layer, this layer execute the nodes in a trigger domains (in a branch) of a workflow. Not in this MVP, however in the future, a workflow would be able to have multiple trigger domains, this means multiple engine per workflows. The second layer is the WorkflowRunner layer, this layer manage and run every engine in a workflow. On top of this, multiple workflows can run in parallel. The third and shallowest layer is the WorkflowManager layer, this layer manage every running workflows.
 
     ┌───────────────────────────────────────────┐
     │ WorkflowManager                           │
@@ -153,9 +153,25 @@ A concrete node is small, example of node :
             value   = average_of_last_closes(candles, period)
             return {"value": value}              # data for downstream
 
-
-
 ## Lifecycle & control flow
+
+### The core tension
+
+Trading software have two requirements that fight each other:
+- Stoping fast, "stopping soon" isn't acceptable
+- Stoping safe, always stop in a way to know the truth
+
+Almost every decision below is about honoring both. The resolution is: stopping is instant at the boundaries between operations, but never interrupts an operation that has a real-world side effect in flight.
+
+### WorkflowRunner lifecycle states
+
+The WorkflowRunner is a small state machine
+- RUNNING — scheduler is ticking, engine runs the graph each tick
+- STOPPING — asked to stop; finishing safely, cancelling orders
+- STOPPED — fully halted, state saved
+- ERRORED — something threw; treated like STOPPING but flagged for the user
+
+The WorkflowManager tracks every WorkflowRunner's state. That collection of states is what status returns and what the Running Workflows panel renders.
 
 ## Persistence & recovery
 

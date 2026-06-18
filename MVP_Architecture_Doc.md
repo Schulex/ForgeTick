@@ -56,18 +56,21 @@ The only two sources of truth are the server for the execution state and the bro
 This architecture doc is only for the MVP. However there are future features that constrains the architecture of this MVP. The architecture of this MVP will deliberately be designed for these future features, but these features will not be built in the MVP.
 
 Architectural features for future features : (already needed for the future features)
+
 - Engine and node apart
 - Three layers of the execution model
 - Scheduler wiring
 - Registry between node class and node type
 
 Future architectural features : (needed in the future for the future features)
+
 - Node groups
 - Trigger domains
 - Message-passing node
 - compensation logic
 
 Future features :
+
 - Non-Sequential Execution of the Workflows
 - OpenClaw and LLM agent
 - Simulation mode
@@ -109,11 +112,13 @@ The deepest layer is the engine layer, this layer execute the nodes in a trigger
 
 #### The engine loop
 
-    def run_one_tick(graph, results={}):
-        for node in topological_order(graph):          # upstream first
+    async def run_engine_pass(self, graph):
+        for node in topological_order(graph):
+            if self.stop_requested:        # checked BETWEEN nodes
+                return "interrupted"        # safe: no node was cut mid-execution
             node_inputs = collect_from_upstream(node, graph, results)
-            results[node.id] = node.execute(node_inputs)
-        return results
+            results[node.id] = await node.execute(node_inputs)  # runs to completion
+        return "completed"
 
 ### Node anatomy
 
@@ -179,6 +184,12 @@ The WorkflowManager tracks every WorkflowRunner's state. That collection of stat
 ### Graceful stop
 
 The stop command or the stop button does not violently abort anything, it set a flag. this flag is read between each node, never mid-node. This insure that a node is always fully run or not started. This is to insure to NOT stop a node between a placed order and recording the placed order in the SQLite. A node is atomic by construction. shutdown() then cancels that workflow's open orders at the broker and marks STOPPED.
+
+Stop on the three time scales :
+
+- Between engine runs (scheduler is sleeping): kill is instant — nothing is running, just flip all flags and cancel pending orders.
+- Between nodes (mid engine run): kill stops the loop before the next node starts.
+- Within a node (a node is executing): the node finishes. If it's the order node with an HTTP call in flight, that call completes so you know the outcome, then the kill proceeds. (This is the asyncio.shield around the broker call — the one uninterruptible section.)
 
 ### Kill switch
 

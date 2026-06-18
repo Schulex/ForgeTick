@@ -4,6 +4,20 @@ version : MVP
 
 ## Overview
 
+### Presentation
+
+The concept is to make the N8N / ComfyUI of the trading world. N8N and
+ComfyUI are node based app where you can create workflow by linking the nodes
+together to automate some process.
+The Idea is to create an app that use the power of node based workflow to
+automate trading orders and send them to the user’s Broker.
+This app, called ForgeTick, sits between the user and the broker’s API. The
+user will not use his logic to trade directly himself anymore, he will put his logic on a
+workflow. After this, ForgeTick will execute the workflow and send the trading order
+to the broker’s API. The user will not anymore execute his logic and tell the trade
+order to the Broker, everything will be automated by the workflow he created using
+his logic.
+
 ### Component Map Diagram
 
     CLIENTS  (stateless — just windows onto the server)
@@ -36,6 +50,35 @@ version : MVP
     (all engine activity → LOGGING → logs/app + logs/trades)
 
 The only two sources of truth are the server for the execution state and the broker for the market state. Everything else is a client or a service. Nothing else owns state.
+
+## Future-proofing decisions
+
+This architecture doc is only for the MVP. However there are future features that constrains the architecture of this MVP. The architecture of this MVP will deliberately be designed for these future features, but these features will not be built in the MVP.
+
+Architectural features for future features : (already needed for the future features)
+- Engine and node apart
+- Three layers of the execution model
+- Scheduler wiring
+- Registry between node class and node type
+
+Future architectural features : (needed in the future for the future features)
+- Node groups
+- Trigger domains
+- Message-passing node
+- compensation logic
+
+Future features :
+- Non-Sequential Execution of the Workflows
+- OpenClaw and LLM agent
+- Simulation mode
+- Custom nodes
+- Large variety of nodes
+- Link to N8N
+
+Workflow example:
+
+(The following section needs to be rewrite)
+In my head I’m thinking about a workflow I would like to be able to do later on. Not right now because it’s not the point of this MVP. However I’m thinking that this workflow would be a great example to test the app and see if we are going in the right path I would like to do a workflow with a part that use LLM to analyze the mood of the market. And another part with multiple strategy already built in the workflow. With the LLM part choosing if one strategy suits the mood among the many strategies to choose from in the workflow and execute the strategy. This is an idea about a workflow adapting to the mood of the market. But each strategy probably doesn’t has the same timeframe. One strategy will work on a 1h timeframe, another one will work on 10min timeframe and a third one will work on market tick directly. And the LLM part will just loop back each time it finishes. This means multiple schedulers in the same workflow with different time and schedulers working on market tick and schedulers working on looping back directly for the LLM part. We also need to think that an LLM node can take easily 30 sec to run when there probably is a strategy that need to run entirely in less than a few seconds. So the engine need to be able to run multiple nodes while another node run in parallel for a long time. This means multiple loop in the engine because the first loop in the engine is stuck on node.execute with an LLM node. Or an even better solution is to keep the engine as it is (simple and easy) and run an engine per-scheduler in the workflow. We just need to think about an engine manager on top in the architecture.
 
 ## Execution model & nodes
 
@@ -123,5 +166,3 @@ A concrete node is small, example of node :
 ## Logging
 
 ## Repo structure
-
-## Future-proofing decisions

@@ -83,6 +83,12 @@ Workflow example:
 (The following section needs to be rewrite)
 In my head I’m thinking about a workflow I would like to be able to do later on. Not right now because it’s not the point of this MVP. However I’m thinking that this workflow would be a great example to test the app and see if we are going in the right path I would like to do a workflow with a part that use LLM to analyze the mood of the market. And another part with multiple strategy already built in the workflow. With the LLM part choosing if one strategy suits the mood among the many strategies to choose from in the workflow and execute the strategy. This is an idea about a workflow adapting to the mood of the market. But each strategy probably doesn’t has the same timeframe. One strategy will work on a 1h timeframe, another one will work on 10min timeframe and a third one will work on market tick directly. And the LLM part will just loop back each time it finishes. This means multiple schedulers in the same workflow with different time and schedulers working on market tick and schedulers working on looping back directly for the LLM part. We also need to think that an LLM node can take easily 30 sec to run when there probably is a strategy that need to run entirely in less than a few seconds. So the engine need to be able to run multiple nodes while another node run in parallel for a long time. This means multiple loop in the engine because the first loop in the engine is stuck on node.execute with an LLM node. Or an even better solution is to keep the engine as it is (simple and easy) and run an engine per-scheduler in the workflow. We just need to think about an engine manager on top in the architecture.
 
+## Vocabulary
+
+- Trigger domains — A trigger domain is a branch of a workflow, each branch has its own scheduler.
+- Engine run —  When an engine is doing a pass on a trigger domain and executing every nodes.
+- Node execution — When an engine execute a specific node in a trigger domain of a workflow, "node.execute" in the engine.
+
 ## Execution model & nodes
 
 To execute a workflow there are two distinct jobs :
@@ -158,6 +164,30 @@ A concrete node is small, example of node :
             value   = average_of_last_closes(candles, period)
             return {"value": value}              # data for downstream
 
+### Node groups
+
+NOT in this MVP but in the future, some nodes with real-side effect will work together, for example a entry + stop-loss or multi-leg orders. However interruption can't happen between nodes working together. The solution is to group the nodes together.
+(The following section needs to be rewrite)
+Like considering the groupe of nodes like a single node for the engine, like making the group  of nodes like a node from the point of view of the engine. But in reality summoning another engine to execute the nodes in the groupe. With the catch that this other engine has not the part « if self.stop_requested: ». Right now in the MVP we have no guard if a node run forever. The solution of this problem will be probably in the engine, so if we also use another engine to run the nodes in the groupe the solution will follow. And we can manage the fails also the same way. A fail in the other engine inside the group will be manage the same way a fail is manage in the « main » engine. Another advantage is that it requires zero change to the engine. When the other engine finish to execute the nodes inside the group the « main » engine take back and continue.
+
+### MVP Nodes
+
+Essential nodes needed to build a SMA crossover strategy.
+
+1. Candle data source — fetches OHLCV candles from Binance for a
+chosen symbol and timeframe
+2. SMA — Simple Moving Average
+3. EMA — Exponential Moving Average
+4. RSI — Relative Strength Index
+5. Comparison — outputs true/false based on >, <, =, ≠, or crossover
+between two inputs
+6. Logic — AND, OR, NOT on boolean inputs (combine multiple
+conditions)
+7. Scheduler / Trigger — runs the workflow every N seconds, or at
+specific times
+8. Order placement — sends a market or limit order to Binance
+9. Chart output — displays a signal over time in the node in the GUI
+
 ## Lifecycle & control flow
 
 ### The core tension
@@ -215,6 +245,7 @@ When the stop button, stop command, kill switch or the kill command is used. The
 
 ## Persistence & recovery
 
+(The following section needs to be write)
 Clean shutdown
 Unclean shutdown
 reconcile market state against the broker,

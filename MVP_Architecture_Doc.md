@@ -257,3 +257,13 @@ reconcile market state against the broker,
 ## Logging
 
 ## Repo structure
+
+I still need to add :
+
+- asyncio.shield
+- node groups as composite nodes (group = node from the engine's view, sub-engine inside, no stop checks within, inherits timeout guard and error path)
+- per-node-execution timeouts as the runaway guard (MVP includes this)
+- groups solve interruption, not partial failure — compensation logic deferred
+- schedulers wired to source nodes, scheduler as sole start node; trigger domains with one scheduler each
+- message-passing node pairs for cross-domain data, non-triggering, mailbox-latest semantics, skip-if-empty
+- editor-level validation of domain rules.

@@ -18,7 +18,48 @@ to the broker’s API. The user will not anymore execute his logic and tell the 
 order to the Broker, everything will be automated by the workflow he created using
 his logic.
 
-### Component Map Diagram
+## Goal of this MVP Architecture Doc
+
+## Vocabulary
+
+- Trigger domains — A trigger domain is a branch of a workflow, each branch has its own scheduler.
+- Engine run —  When an engine is doing a pass on a trigger domain and executing every nodes.
+- Node execution — When an engine execute a specific node in a trigger domain of a workflow, "node.execute" in the engine.
+
+## Future-proofing decisions
+
+This architecture doc is only for the MVP. However there are future features that constrains the architecture of this MVP. The architecture of this MVP will deliberately be designed for these future features, but these features will not be built in the MVP.
+
+Architectural features for future features : (already needed for the future features)
+
+- Engine and node apart
+- Three layers of the execution model
+- Scheduler wiring
+- Registry between node class and node type
+
+Future architectural features : (needed in the future for the future features)
+
+- Node groups
+- Trigger domains
+- Message-passing node
+- Compensation logic
+- Failure handling
+
+Future features :
+
+- Non-Sequential execution of the workflows
+- Trigger domain checking
+- OpenClaw and LLM agent
+- Simulation mode
+- Custom nodes
+- Large variety of nodes
+- Link to N8N
+
+Workflow example to see as a north star. A market-mood workflow.
+
+The goal is to be able to execute workflows with this type of complexity later on. Not right now because it’s not the point of this MVP. However this example workflow would be a great example to test the app and see if we are going in the right path. the goal is to be able to do a workflow with a part that use LLM to analyze the mood of the market. And another part with multiple strategy already built in the workflow. With the LLM part choosing if one strategy suits the mood among the many strategies to choose from in the workflow and execute the strategy. This is an idea about a workflow adapting to the mood of the market. But each strategy probably doesn’t has the same timeframe. One strategy will work on a 1h timeframe, another one will work on 10min timeframe and a third one will work on market tick directly. And the LLM part will just loop back each time it finishes. This means multiple schedulers in the same workflow with different time and schedulers working on market tick and schedulers working on looping back directly for the LLM part. With each scheduler having this own trigger domain. Each scheduler summoning engines when it trigger to run all the nodes in its domain. With message-passing between trigger domain using the message-passing-node.
+
+## Component Map Diagram
 
     CLIENTS  (stateless — just windows onto the server)
     ┌──────────────┐              ┌──────────────┐
@@ -50,44 +91,6 @@ his logic.
     (all engine activity → LOGGING → logs/app + logs/trades)
 
 The only two sources of truth are the server for the execution state and the broker for the market state. Everything else is a client or a service. Nothing else owns state.
-
-## Future-proofing decisions
-
-This architecture doc is only for the MVP. However there are future features that constrains the architecture of this MVP. The architecture of this MVP will deliberately be designed for these future features, but these features will not be built in the MVP.
-
-Architectural features for future features : (already needed for the future features)
-
-- Engine and node apart
-- Three layers of the execution model
-- Scheduler wiring
-- Registry between node class and node type
-
-Future architectural features : (needed in the future for the future features)
-
-- Node groups
-- Trigger domains
-- Message-passing node
-- compensation logic
-
-Future features :
-
-- Non-Sequential Execution of the Workflows
-- OpenClaw and LLM agent
-- Simulation mode
-- Custom nodes
-- Large variety of nodes
-- Link to N8N
-
-Workflow example:
-
-(The following section needs to be rewrite)
-In my head I’m thinking about a workflow I would like to be able to do later on. Not right now because it’s not the point of this MVP. However I’m thinking that this workflow would be a great example to test the app and see if we are going in the right path I would like to do a workflow with a part that use LLM to analyze the mood of the market. And another part with multiple strategy already built in the workflow. With the LLM part choosing if one strategy suits the mood among the many strategies to choose from in the workflow and execute the strategy. This is an idea about a workflow adapting to the mood of the market. But each strategy probably doesn’t has the same timeframe. One strategy will work on a 1h timeframe, another one will work on 10min timeframe and a third one will work on market tick directly. And the LLM part will just loop back each time it finishes. This means multiple schedulers in the same workflow with different time and schedulers working on market tick and schedulers working on looping back directly for the LLM part. We also need to think that an LLM node can take easily 30 sec to run when there probably is a strategy that need to run entirely in less than a few seconds. So the engine need to be able to run multiple nodes while another node run in parallel for a long time. This means multiple loop in the engine because the first loop in the engine is stuck on node.execute with an LLM node. Or an even better solution is to keep the engine as it is (simple and easy) and run an engine per-scheduler in the workflow. We just need to think about an engine manager on top in the architecture.
-
-## Vocabulary
-
-- Trigger domains — A trigger domain is a branch of a workflow, each branch has its own scheduler.
-- Engine run —  When an engine is doing a pass on a trigger domain and executing every nodes.
-- Node execution — When an engine execute a specific node in a trigger domain of a workflow, "node.execute" in the engine.
 
 ## Execution model & nodes
 
@@ -164,12 +167,6 @@ A concrete node is small, example of node :
             value   = average_of_last_closes(candles, period)
             return {"value": value}              # data for downstream
 
-### Node groups
-
-NOT in this MVP but in the future, some nodes with real-side effect will work together, for example a entry + stop-loss or multi-leg orders. However interruption can't happen between nodes working together. The solution is to group the nodes together.
-(The following section needs to be rewrite)
-Like considering the groupe of nodes like a single node for the engine, like making the group  of nodes like a node from the point of view of the engine. But in reality summoning another engine to execute the nodes in the groupe. With the catch that this other engine has not the part « if self.stop_requested: ». Right now in the MVP we have no guard if a node run forever. The solution of this problem will be probably in the engine, so if we also use another engine to run the nodes in the groupe the solution will follow. And we can manage the fails also the same way. A fail in the other engine inside the group will be manage the same way a fail is manage in the « main » engine. Another advantage is that it requires zero change to the engine. When the other engine finish to execute the nodes inside the group the « main » engine take back and continue.
-
 ### MVP Nodes
 
 Essential nodes needed to build a SMA crossover strategy.
@@ -187,6 +184,77 @@ conditions)
 specific times
 8. Order placement — sends a market or limit order to Binance
 9. Chart output — displays a signal over time in the node in the GUI
+
+### Scheduler wiring
+
+A scheduler is the only node at the top of a trigger domain. Only the scheduler can trigger the execution of a domain, the scheduler is the sole start node. Each trigger domains has one scheduler. The source nodes that begin the logic of trigger domain are wired to the scheduler.
+
+Scheduler — wire — source node — wire — all the following nodes wired together — wire — last node
+
+### Registry
+
+WORKFLOW JSON (data, on disk)            NODES FOLDER (code, on disk)
+┌───────────────────────────┐          ┌──────────────────────────┐
+│ {                         │          │ nodes/                   │
+│   "nodes": [              │          │   candle_source.py       │
+│     {                     │          │   sma.py   ◄──────┐      │
+│       "id": "n1",         │          │   ema.py          │      │
+│       "type": "sma", ─────┼───┐      │   rsi.py          │      │
+│       "config": {         │   │      │   order.py        │      │
+│         "period": 20      │   │      │   ...             │      │
+│       }                   │   │      └───────────────────┼──────┘
+│     }                     │   │                          │
+│   ]                       │   │   each file registers    │
+│ }                         │   │   its class by name      │
+└───────────────────────────┘   │                          │
+                                │                          │
+                                ▼                          │
+                      ┌─────────────────────┐              │
+                      │   NODE REGISTRY     │              │
+                      │   (a dictionary)    │              │
+                      │                     │              │
+                      │  "candle_source"→…  │              │
+                      │  "sma"  ────────────┼──────────────┘
+                      │  "ema"  → EMANode   │
+                      │  "rsi"  → RSINode   │
+                      │  "order"→ OrderNode │
+                      └──────────┬──────────┘
+                                 │  "look up 'sma' → get SMANode
+                                 │   → build it with period=20"
+                                 ▼
+                      ┌─────────────────────┐
+                      │      ENGINE         │
+                      │  builds & runs the  │
+                      │  node instances     │
+                      └─────────────────────┘
+
+    # engine.py
+    NODE_REGISTRY = {}
+
+    def register(node_class):           # a decorator
+        NODE_REGISTRY[node_class.type_name] = node_class
+        return node_class
+
+
+    # nodes/sma.py
+    from engine import Node, register
+
+    @register                            # this line puts SMANode in the registry
+    class SMANode(Node):
+        type_name = "sma"
+        def execute(self, inputs):
+            ...
+
+
+    # loading a workflow
+    def build_node(node_json):
+        cls = NODE_REGISTRY[node_json["type"]]      # "sma" → SMANode
+        return cls(node_json["id"], node_json["config"])
+
+### asyncio
+
+ForgeTick will wait a lot on the node to be
+the asyncio.shield
 
 ## Lifecycle & control flow
 
@@ -233,6 +301,14 @@ There are two sources of truth. The backend server own the execution state of wo
 
 When the stop button, stop command, kill switch or the kill command is used. The app cancel pending/resting orders (limit orders sitting on the book, not yet filled). It does NOT liquidate positions (assets already owned).
 
+### Pre-node timeout
+
+Each node need a maximal runtime depending of the nodes. This is to insure that there are no runaway. If the execution time of the node is greater than this maximal allowed runtime the engine the workflow.
+
+### Validation of domain rules
+
+The validation of domain rules are on the editor level
+
 ### The full control-flow path
 
     CLI:  forgetick stop sma-cross
@@ -245,10 +321,27 @@ When the stop button, stop command, kill switch or the kill command is used. The
 
 ## Persistence & recovery
 
-(The following section needs to be write)
-Clean shutdown
-Unclean shutdown
-reconcile market state against the broker,
+### Shutdown
+
+Case 1 : Clean Shutdown
+This can append if Mathias intentionally stops the app. All of these must come
+back : workflow definitions, the current state of each running workflow node, open
+positions, and pending orders, recent log. When everything is back the app must
+choose between resume the workflows with correct states or stop properly the
+workflow and cancels all open orders via the broker. This decision depends on the
+downtime and the workflows. If a workflow trade on an hour timeframe and the
+downtime is only one minute the app need to resume the workflow and continue.
+However if a workflow trade on a minute timeframe and the downtime is 15 minutes
+the app need to stop properly the workflow and cancels all open orders via the
+broker.
+Case 2 : Unclean Shutdown
+This can append for multiple reason for example : crash, forced reboot of the
+computer, power outage… On restart the app do not blindly resume ! The state on
+disk might be stale, prices have moved, conditions have changed. Instead, the
+engine should detect “the last shutdown was unclean” and present Mathias a
+choice: cancel everything and start fresh, or resume.
+
+In both case the app need to always reconcile market state against the broker. The broker is the only source of truth for the market state.
 
 ## Broker layer
 
@@ -261,9 +354,3 @@ reconcile market state against the broker,
 I still need to add :
 
 - asyncio.shield
-- node groups as composite nodes (group = node from the engine's view, sub-engine inside, no stop checks within, inherits timeout guard and error path)
-- per-node-execution timeouts as the runaway guard (MVP includes this)
-- groups solve interruption, not partial failure — compensation logic deferred
-- schedulers wired to source nodes, scheduler as sole start node; trigger domains with one scheduler each
-- message-passing node pairs for cross-domain data, non-triggering, mailbox-latest semantics, skip-if-empty
-- editor-level validation of domain rules.

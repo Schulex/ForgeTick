@@ -55,6 +55,12 @@ Future features :
 - Large variety of nodes
 - Link to N8N
 
+### Concurrency & Parallelism
+
+Concurrency for all nodes by default; process-isolation (run_in_executor + process pool) reserved for individually CPU-heavy nodes (local LLM, heavy compute); a dedicated-process "priority runner" as the eventual answer for latency-sensitive tick strategies — never generalized per-node parallelism, which costs more overhead than it saves.
+
+### North Star Workflow
+
 Workflow example to see as a north star. A market-mood workflow.
 
 The goal is to be able to execute workflows with this type of complexity later on. Not right now because it’s not the point of this MVP. However this example workflow would be a great example to test the app and see if we are going in the right path. the goal is to be able to do a workflow with a part that use LLM to analyze the mood of the market. And another part with multiple strategy already built in the workflow. With the LLM part choosing if one strategy suits the mood among the many strategies to choose from in the workflow and execute the strategy. This is an idea about a workflow adapting to the mood of the market. But each strategy probably doesn’t has the same timeframe. One strategy will work on a 1h timeframe, another one will work on 10min timeframe and a third one will work on market tick directly. And the LLM part will just loop back each time it finishes. This means multiple schedulers in the same workflow with different time and schedulers working on market tick and schedulers working on looping back directly for the LLM part. With each scheduler having this own trigger domain. Each scheduler summoning engines when it trigger to run all the nodes in its domain. With message-passing between trigger domain using the message-passing-node.
@@ -251,10 +257,23 @@ WORKFLOW JSON (data, on disk)            NODES FOLDER (code, on disk)
         cls = NODE_REGISTRY[node_json["type"]]      # "sma" → SMANode
         return cls(node_json["id"], node_json["config"])
 
-### asyncio
+### Asyncio
 
-ForgeTick will wait a lot on the node to be
-the asyncio.shield
+Most of what ForgeTick does is waiting: waiting for the broker to answer an API call, waiting for the scheduler's next fire, ... A synchronous program would freeze during each wait. ForgeTick will use Asyncio.
+
+#### asyncio.shield
+
+asyncio.shield is a really important feature. asyncio.shield ensures that even a forced cancellation can't interrupt critical call mid-flight (Example : order node for the broker call).
+
+  order node running
+    await shield(place_order()) ─► request sent ─► reply received ─► recorded  ✓
+                                   ▲                                      │
+                          TIMEOUT or SHUTDOWN fires here                  │
+                                   │                                      │
+                          held back until the call returns ───────────────┘
+                                   │
+                          THEN the cancellation proceeds
+              Outcome always known.  ✓
 
 ## Lifecycle & control flow
 
@@ -339,11 +358,18 @@ This can append for multiple reason for example : crash, forced reboot of the
 computer, power outage… On restart the app do not blindly resume ! The state on
 disk might be stale, prices have moved, conditions have changed. Instead, the
 engine should detect “the last shutdown was unclean” and present Mathias a
-choice: cancel everything and start fresh, or resume.
+choice: cancel everything and start fresh, or resume and reconcile market state
+against the broker.
 
-In both case the app need to always reconcile market state against the broker. The broker is the only source of truth for the market state.
+In both case the app need to always reconcile market state against the broker. The broker is the only source of truth for the market state. Normaly after a clean shutdown this step is not useful, it's just always great to check and make sure. However after an unclean shutdown if the resume option is choosed it's mandatory to reconcile market state against the broker.
 
 ## Broker layer
+
+
+
+
+
+
 
 ## API surface
 
@@ -354,3 +380,5 @@ In both case the app need to always reconcile market state against the broker. T
 I still need to add :
 
 - asyncio.shield
+
+Concurrency for all nodes by default; process-isolation (run_in_executor + process pool) reserved for individually CPU-heavy nodes (local LLM, heavy compute); a dedicated-process "priority runner" as the eventual answer for latency-sensitive tick strategies — never generalized per-node parallelism, which costs more overhead than it saves.

@@ -34,8 +34,8 @@ Architectural features for future features : (already needed for the future feat
 
 - Engine and node apart, for being able to easily add node and custom node later
 - Three layers of the execution model, for non-sequential excution and trigger domains
-- Scheduler wiring, is to clearly see each trigger domains
-- Registry between node class and node type, is add custom node later
+- Scheduler wiring, is to explicitly know which scheduler owns which nodes and to clearly define each trigger domains.
+- Registry between node class and node type, is to add custom node later
 - The abstract BrokerAdapter interface, is the extension point for multi-broker support
 - CCXT, already abstracts 100+ exchanges, non-CCXT brokers would implement the same interface differently inside.
 
@@ -47,10 +47,15 @@ Future architectural features : (needed in the future for the future features)
 - Compensation logic, is for failure/error handling and what to do when it happened
 - Failure/error handling, is to activate compensation logic
 - Per-broker capability differences, eventually need a capability-declaration mechanism
+- WebSocket market ticks stream, is for market tick trading
+- Schedule at each market ticks, for market tick trading
+- Schedule in a loop, for logics needing to loop (example : LLM analyst)
 
 Future features :
 
 - Non-Sequential execution of workflows
+- Scheduler option to runs the workflow at each market ticks
+- Scheduler option to runs the workflow in a loop
 - Trigger domain
 - Easily add new Brokers
 - Editor showing brokers capabilities
@@ -66,7 +71,8 @@ NOT in this MVP but in the future, some nodes with real-side effect can work tog
 
 ### Concurrency & Parallelism
 
-Concurrency for all nodes by default; process-isolation (run_in_executor + process pool) reserved for individually CPU-heavy nodes (local LLM, heavy compute); a dedicated-process "priority runner" as the eventual answer for latency-sensitive tick strategies — never generalized per-node parallelism, which costs more overhead than it saves.
+Concurrency for all nodes by default; process-isolation (run_in_executor + process pool) reserved for individually CPU-heavy nodes (local LLM, heavy compute).
+A dedicated "priority engine or priority workflow" running in parallel as the eventual answer for latency-sensitive tick strategies — never generalized per-node parallelism, which costs more overhead than it saves.
 
 ### North Star Workflow
 
@@ -214,16 +220,23 @@ chosen symbol and timeframe
 between two inputs
 6. Logic — AND, OR, NOT on boolean inputs (combine multiple
 conditions)
-7. Scheduler / Trigger — runs the workflow every N seconds, or at
+7. Scheduler — runs the workflow every N seconds, or at
 specific times
 8. Order placement — sends a market or limit order to Binance
 9. Chart output — displays a signal over time in the node in the GUI
 
-### Scheduler wiring
+### Scheduler
 
-A scheduler is the only node at the top of a trigger domain. Only the scheduler can trigger the execution of a domain, the scheduler is the sole start node. Each trigger domains has one scheduler. The source nodes that begin the logic of trigger domain are wired to the scheduler.
+A scheduler is the only node at the top of a trigger domain. Only the scheduler can trigger the execution of a domain, the scheduler is the sole start node. Each trigger domains has one scheduler. The source nodes that begin the logic of the trigger domain are wired to the scheduler.
 
-Scheduler — wire — source node — wire — all the following nodes wired together — wire — last node
+Schedulers are wired to explicitly know which scheduler owns which nodes and to clearly define each trigger domains.
+
+Schedulers trigger options :
+
+- Runs the workflow every N seconds (from 1ms to infinity)
+- Runs the workflow at specific times
+- Runs the workflow at each market ticks (NOT in this MVP, future feature)
+- Runs the workflow in a loop (NOT in this MVP, future feature)
 
 ### Registry
 

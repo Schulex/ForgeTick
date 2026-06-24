@@ -32,28 +32,37 @@ This architecture doc is only for the MVP. However there are future features tha
 
 Architectural features for future features : (already needed for the future features)
 
-- Engine and node apart
-- Three layers of the execution model
-- Scheduler wiring
-- Registry between node class and node type
+- Engine and node apart, for being able to easily add node and custom node later
+- Three layers of the execution model, for non-sequential excution and trigger domains
+- Scheduler wiring, is to clearly see each trigger domains
+- Registry between node class and node type, is add custom node later
+- The abstract BrokerAdapter interface, is the extension point for multi-broker support
+- CCXT, already abstracts 100+ exchanges, non-CCXT brokers would implement the same interface differently inside.
 
 Future architectural features : (needed in the future for the future features)
 
-- Node groups
-- Trigger domains
-- Message-passing node
-- Compensation logic
-- Failure handling
+- Node groups, is for node working together (entry + stop-loss or multi-leg orders)
+- Trigger domains, is for the non-sequential execution
+- Message-passing node, for being able to cleanly pass a message between two triger domains
+- Compensation logic, is for failure/error handling and what to do when it happened
+- Failure/error handling, is to activate compensation logic
+- Per-broker capability differences, eventually need a capability-declaration mechanism
 
 Future features :
 
-- Non-Sequential execution of the workflows
-- Trigger domain checking
+- Non-Sequential execution of workflows
+- Trigger domain
+- Easily add new Brokers
+- Editor showing brokers capabilities
 - OpenClaw and LLM agent
 - Simulation mode
 - Custom nodes
 - Large variety of nodes
 - Link to N8N
+
+### Node groups
+
+NOT in this MVP but in the future, some nodes with real-side effect can work together, for example a entry + stop-loss or multi-leg orders. However interruption can't happen between these nodes. The solution is to group the nodes together and make this group behave like a normal node from the outside view. But in reality summoning another engine to execute the nodes in the groupe. With the catch that this other engine doesn't respond to the stop flag. That it requires zero change to the engine. When the other engine finish to execute the nodes inside the group the « main » engine take back and continue. If an error or a fail happened in this engine it is manage the same way as an error or a fail in the main engine.
 
 ### Concurrency & Parallelism
 
@@ -143,8 +152,9 @@ The deepest layer is the engine layer, this layer execute the nodes in a trigger
 - Output ports — named, typed sockets where results leave. SMA has one output: value.
 - An execute method — takes the inputs, returns the outputs.
 
-Some node will just have side effect instead of returning a something. However these nodes will looks the same shape. The order node has a side effect (calling the broker) instead of returning a number.
+Some node just have side effect instead of returning a something. However these nodes will looks the same shape. The order node has a side effect (calling the broker) instead of returning a number.
 The "typed" part matters for the GUI: if an output port is type Number and an input port is type Candles, React Flow refuses to let you connect them. The types prevent nonsense wiring before it ever runs.
+Some node need memory, each node that need memory save its internal state to SQLite, that's the self.prev_*.
 
 #### The base interface, in plain Python
 
@@ -162,7 +172,7 @@ Every node inherits from one base class:
             # returns: {port_name: value}  going to downstream nodes
             raise NotImplementedError
 
-A concrete node is small, example of node :
+Example of node :
 
     class SMANode(Node):
         type_name = "sma"
@@ -172,6 +182,24 @@ A concrete node is small, example of node :
             period  = self.config["period"]      # user setting
             value   = average_of_last_closes(candles, period)
             return {"value": value}              # data for downstream
+
+Example of node with memory :
+
+    class CrossoverNode(Node):
+        type_name = "crossover"
+
+        def __init__(self, node_id, config):
+            super().__init__(node_id, config)
+            self.prev_a = None       # remembered across ticks
+            self.prev_b = None
+
+        def execute(self, inputs):
+            a, b = inputs["a"], inputs["b"]
+            crossed_up = (self.prev_a is not None
+                        and self.prev_a <= self.prev_b
+                        and a > b)
+            self.prev_a, self.prev_b = a, b
+            return {"crossed": crossed_up}
 
 ### MVP Nodes
 
@@ -320,9 +348,9 @@ There are two sources of truth. The backend server own the execution state of wo
 
 When the stop button, stop command, kill switch or the kill command is used. The app cancel pending/resting orders (limit orders sitting on the book, not yet filled). It does NOT liquidate positions (assets already owned).
 
-### Pre-node timeout
+### Infinite node runtime
 
-Each node need a maximal runtime depending of the nodes. This is to insure that there are no runaway. If the execution time of the node is greater than this maximal allowed runtime the engine the workflow.
+To protect against a node running forever is to assign to every node a configurable time budget, a maximal allowed runtime. This is to insure that there are no runaway. If the execution time of the node is greater than this maximal allowed runtime the engine stop the workflow.
 
 ### Validation of domain rules
 
@@ -339,6 +367,16 @@ The validation of domain rules are on the editor level
     → GUI's Running Workflows panel updates instantly; CLI status reflects it
 
 ## Persistence & recovery
+
+The app need to save the definition of the workflows and the running states.
+
+### JSON
+
+To be able to easily share workflows, the definition of workflows are save in a JSON.
+
+### SQLite
+
+SQLite save the states of running workflows. SQLite is the database where the running states are saved.
 
 ### Shutdown
 
@@ -365,11 +403,50 @@ In both case the app need to always reconcile market state against the broker. T
 
 ## Broker layer
 
+        ENGINE / NODES
+              │
+              │  speaks only the brokerAdapter
+              ▼
+     ┌─────────────────────┐
+     │   BrokerAdapter     │   ◄── abstract: defines WHAT operations exist
+     │   (interface)       │
+     └─────────┬───────────┘
+               │ 
+               ▼
+     ┌─────────────────────┐
+     │   BinanceAdapter    │   ◄── concrete: defines HOW, using CCXT
+     │   (uses CCXT)       │
+     └─────────┬───────────┘
+               ▼
+            CCXT library
+               ▼
+           Binance API
 
+For this MVP there is only one adapter: BinanceAdapter, wrapping CCXT.
 
+### The adapter interface
 
+The engine talks to an abstract BrokerAdapter, not to CCXT directly. The adapter defines a small set of operations the engine needs:
 
+BrokerAdapter (abstract interface)
+├── fetch_candles(symbol, timeframe, limit)   → list of OHLCV candles
+├── place_order(symbol, side, type, amount)   → order result (id, status)
+├── cancel_order(order_id, symbol)            → cancellation result
+├── fetch_open_orders(symbol)                 → list of resting orders
+└── fetch_positions()                         → current holdings
 
+This small set of operations match the order node capability in this MVP (Market and limit orders only). Spot trading only (no margin, no derivatives)
+
+This boundary exists so adding a second broker later (Kraken, Interactive Brokers) means writing a new class — KrakenAdapter — that implements the same five operations. The engine, the nodes, and the workflows are untouched, because they only ever knew the abstract interface. "Add Kraken" becomes "write one new file and register it," exactly like the node registry pattern. The broker the user wants becomes a configuration choice, not a code change.
+The engine depends on an interface, never on a concrete vendor.
+
+### Reconciliation
+
+The broker owns market state. The broker layer is how reconciliation happens. On unclean restart, the recovery logic calls fetch_open_orders() and fetch_positions() to ask the broker what actually exists, then compares against ForgeTick's last-known state in SQLite. Where they disagree, the broker wins, and the user is prompted before anything resumes. The adapter is the only component that can answer "what is actually true at the exchange right now."
+
+### Credentials
+
+The uer's API Keys live in a local configuration file on the user's own machine, read by the adapter at startup. They are never transmitted to ForgeTick and never logged. This is the local-first property. The user's own machine talks directly to the user's own broker account.
 
 ## API surface
 
@@ -377,8 +454,10 @@ In both case the app need to always reconcile market state against the broker. T
 
 ## Repo structure
 
-I still need to add :
 
-- asyncio.shield
 
-Concurrency for all nodes by default; process-isolation (run_in_executor + process pool) reserved for individually CPU-heavy nodes (local LLM, heavy compute); a dedicated-process "priority runner" as the eventual answer for latency-sensitive tick strategies — never generalized per-node parallelism, which costs more overhead than it saves.
+
+
+
+
+

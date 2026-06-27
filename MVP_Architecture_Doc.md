@@ -47,7 +47,7 @@ Future architectural features : (needed in the future for the future features)
 - Compensation logic, is for failure/error handling and what to do when it happened
 - Failure/error handling, is to activate compensation logic
 - Per-broker capability differences, eventually need a capability-declaration mechanism
-- WebSocket market ticks stream, is for market tick trading
+- WebSocket market data stream, is for market ticks trading
 - Schedule at each market ticks, for market tick trading
 - Schedule in a loop, for logics needing to loop (example : LLM analyst)
 
@@ -72,7 +72,7 @@ NOT in this MVP but in the future, some nodes with real-side effect can work tog
 ### Concurrency & Parallelism
 
 Concurrency for all nodes by default; process-isolation (run_in_executor + process pool) reserved for individually CPU-heavy nodes (local LLM, heavy compute).
-A dedicated "priority engine or priority workflow" running in parallel as the eventual answer for latency-sensitive tick strategies — never generalized per-node parallelism, which costs more overhead than it saves.
+A dedicated "priority engine or priority workflow" running in parallel as the eventual answer for latency-sensitive tick strategies — never generalized per-node parallelism, which costs more overhead than it saves. 
 
 ### North Star Workflow
 
@@ -461,7 +461,18 @@ The broker owns market state. The broker layer is how reconciliation happens. On
 
 The uer's API Keys live in a local configuration file on the user's own machine, read by the adapter at startup. They are never transmitted to ForgeTick and never logged. This is the local-first property. The user's own machine talks directly to the user's own broker account.
 
+### Default Broker
+
+To determine which broker is used for transactions in a workflow, a three-level default broker model is needed.
+The three-level default broker model :
+
+- Connection settings level — the global default broker
+- Workflow level — can override the global default for this particular workflow
+- Order node level — a dropdown that defaults to a default-broker option, which resolves to "whatever the workflow says," but can be pinned to a specific broker when needed.
+
 ## API surface
+
+
 
 ## Logging
 

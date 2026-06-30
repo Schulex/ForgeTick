@@ -472,6 +472,79 @@ The three-level default broker model :
 
 ## API surface
 
+### Purpose
+
+The API is the contract between the clients (Browser GUI, CLI, and any future third-party client) and the backend server. Because the server is the single source of truth, every action a client takes and every update it receives flows through this API. Clients hold no authority of their own: they send requests and render what the server reports.
+
+### Two channels, two jobs
+
+    CLIENTS                                     SERVER
+    ┌──────────────┐                      ┌──────────────────┐
+    │ Browser GUI  │   ── HTTP request ──►│   commands &     │
+    │     CLI      │◄── HTTP response ──  │   queries        │
+    │  (3rd party) │                      │                  │
+    │              │◄═══ WebSocket ═══════│   live state     │
+    │              │     (push)           │   broadcasts     │
+    └──────────────┘                      └──────────────────┘
+
+- HTTP — for actions and questions: "run this workflow," "what's running?" One request up, one response back. How clients cause things and pull state.
+- WebSocket — for live updates: the server pushes state changes to all connected clients the instant they happen, unprompted. How clients stay in sync without polling.
+
+### Endpoint conventions
+
+- All routes are versioned under /api/v1/. This lets a future /api/v2/ run alongside v1, so existing clients don't break when the API evolves.
+- Reads use GET; any operation that changes server state uses POST, with the action named in the path (/run, /stop, /kill, /save). One uniform rule, no special cases: every route reads as resource/action.
+
+### HTTP endpoints (MVP)
+
+POST   /api/v1/workflows/{name}/run    → start a workflow               (CLI: run,    GUI: run button)
+POST   /api/v1/workflows/{name}/stop   → stop one workflow + its orders (CLI: stop,   GUI: stop button)
+POST   /api/v1/workflows/{name}/save   → write a workflow's JSON        (GUI: save)
+GET    /api/v1/workflows/{name}/load   → fetch a workflow's JSON        (GUI: render in editor)
+GET    /api/v1/workflows/running       → status of running workflows    (CLI: status, GUI: Running panel)
+GET    /api/v1/workflows/list          → list available workflow files  (CLI: list,   GUI: file browser)
+POST   /api/v1/kill                    → stop all + cancel all orders   (CLI: kill,   GUI: kill switch)
+
+applogs and tradelogs are deliberately not endpoints — logs stream from files, not through the API. open/close are not endpoints either — they are GUI-local editor actions ("which workflow is on my canvas"), state the server doesn't track. The endpoint list is exactly the operations that act on server-owned state.
+
+### The filesystem principle behind load and save
+
+A browser runs in a security sandbox: it cannot read or write the local filesystem — only the Python server can.
+
+- load — the browser needs a workflow's content to draw the nodes on the canvas, but cannot read the file itself, so it asks the server, which reads the file and returns the JSON. (Distinct from run, where the server reads the file and executes it server-side, sending no content to anyone.)
+- save — the browser holds the graph the user drew but cannot write it to disk, so it sends the JSON to the server, which writes the file.
+
+### WebSocket: the sync mechanism
+
+    Mathias types `forgetick run sma-cross` in his terminal
+            │
+            ▼
+    POST /api/v1/workflows/sma-cross/run     ── HTTP, from the CLI
+            │
+            ▼
+    server starts the runner, state → RUNNING
+            │
+            ▼
+    server broadcasts {workflow: sma-cross, state: RUNNING, ...}
+            │
+            ├──═══ WebSocket ═══►  Browser GUI: Running panel shows it appear
+            └──═══ WebSocket ═══►  any other connected client updates too
+
+Any change to server state is broadcast to every connected client immediately.
+
+The CLI caused the change over HTTP; the GUI learned of it over WebSocket, without polling and without knowing the CLI exists. No client holds state; each renders the server's last broadcast. A client can disconnect and reconnect at any time and get the true picture by re-querying GET /workflows/running and resubscribing — a crashed browser or dropped SSH session loses nothing, because it held nothing.
+
+MVP broadcast payloads: workflow state transitions (IDLE/RUNNING/STOPPING/STOPPED/ERRORED) and per-workflow status (runtime, trade count, P&L), keeping the Running panel and status live.
+
+### Self-documentation
+
+FastAPI auto-generates an interactive OpenAPI (Swagger) specification from the endpoint code, served at /docs. This is both the developer reference and the contract any third-party client author reads to build against ForgeTick.
+
+### MVP scope
+
+- The seven HTTP endpoints above; one WebSocket stream broadcasting state + status to all clients.
+- No authentication: single-user local app, the user is whoever is at the machine.
+- Binds to localhost by default on a fixed port; the user may expose it on their LAN at their own choice (the "run on a home server" scenario).
 
 
 ## Logging

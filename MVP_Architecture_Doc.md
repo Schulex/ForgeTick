@@ -38,6 +38,7 @@ Architectural features for future features : (already needed for the future feat
 - Registry between node class and node type, is to add custom node later
 - The abstract BrokerAdapter interface, is the extension point for multi-broker support
 - CCXT, already abstracts 100+ exchanges, non-CCXT brokers would implement the same interface differently inside.
+- One user per-instance and multi instances, keep the security model sound, cash isolation and no catastrophic single honeypot
 
 Future architectural features : (needed in the future for the future features)
 
@@ -50,6 +51,7 @@ Future architectural features : (needed in the future for the future features)
 - WebSocket market data stream, is for market ticks trading
 - Schedule at each market ticks, for market tick trading
 - Schedule in a loop, for logics needing to loop (example : LLM analyst)
+- Ports auto-selection, for multi-instances
 
 Future features :
 
@@ -64,6 +66,8 @@ Future features :
 - Custom nodes
 - Large variety of nodes
 - Link to N8N
+- Third-party clients
+- Authentication
 
 ### Node groups
 
@@ -72,7 +76,7 @@ NOT in this MVP but in the future, some nodes with real-side effect can work tog
 ### Concurrency & Parallelism
 
 Concurrency for all nodes by default; process-isolation (run_in_executor + process pool) reserved for individually CPU-heavy nodes (local LLM, heavy compute).
-A dedicated "priority engine or priority workflow" running in parallel as the eventual answer for latency-sensitive tick strategies — never generalized per-node parallelism, which costs more overhead than it saves. 
+A dedicated "priority engine or priority workflow" running in parallel as the eventual answer for latency-sensitive tick strategies — never generalized per-node parallelism, which costs more overhead than it saves.
 
 ### North Star Workflow
 
@@ -474,7 +478,7 @@ The three-level default broker model :
 
 ### Purpose
 
-The API is the contract between the clients (Browser GUI, CLI, and any future third-party client) and the backend server. Because the server is the single source of truth, every action a client takes and every update it receives flows through this API. Clients hold no authority of their own: they send requests and render what the server reports.
+The API is the contract between the clients (Browser GUI, CLI, and any future third-party client) and the backend server. Because the server is the single source of truth, every action a client takes and every update it receives flows through this API. Clients hold no authority of their own: they send requests and render what the server reports. The API is treated as a public contract.
 
 ### Two channels, two jobs
 
@@ -546,6 +550,25 @@ FastAPI auto-generates an interactive OpenAPI (Swagger) specification from the e
 - No authentication: single-user local app, the user is whoever is at the machine.
 - Binds to localhost by default on a fixed port; the user may expose it on their LAN at their own choice (the "run on a home server" scenario).
 
+### LAN, "home server" scenario
+
+Binds to localhost by default on a fixed port; the user may expose it on their LAN at their own choice. This option can be change in the settings. This is if someone run ForgeTick on a local server / home server. In this case the connection will be from another computer via SSH terminal or via the broswer like usual.
+
+### Per-user instance
+
+One user per-instance and multi instances, NOT one instance with multiple user ! Rationale: (1) crash isolation — one user's faulty workflow cannot take down others or cost them money; (2) security — broker API keys are never pooled into one database, avoiding a catastrophic single honeypot. Per-instance keep the security model sound.
+
+### Ports
+
+MVP has one instance on a fixed default port, avoiding the common dev ports. V2 auto-selection: scan upward from the base port until one binds, and write the chosen port (with a PID) to a runtime file so the CLI can discover which instance is on which port. Multiple instances each write their own entry.
+
+### Third-party clients
+
+Third-party clients are a native consequence of the server-as-source-of-truth design: any program speaking the versioned HTTP+WebSocket contract is a valid client, indistinguishable from the built-in GUI/CLI. Preserved (not built) by three cheap disciplines already adopted — API versioning, treating the API as a public contract, and the free OpenAPI docs. No formal plugin system, client SDK, or client-auth in the MVP; the clean versioned API is the whole enabler.
+
+### Authentication
+
+Authentication is introduced in V2, so only the clients with the right identity can control the server. Useful in the "home server" scenario with the server expose on the local network. The endpoints shapes are unchanged by this; instances simply gains an identity guard in front.
 
 ## Logging
 

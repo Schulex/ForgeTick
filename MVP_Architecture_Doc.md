@@ -560,14 +560,11 @@ One user per-instance and multi instances, NOT one instance with multiple user !
 
 ### Ports
 
-MVP has one instance on a fixed default port, the port is 18181 because he's memorable and avoid conflict with famous ports. V2 will have dynamic ports for supporting multi instances. For V2, on startup the server writes its port (and a PID) to a small runtime file; the CLI reads that file to find the instance. With multiple instances, each writes its own entry.
+MVP has one instance on a fixed default port, the port is 18181 because it's memorable and avoid conflict with famous ports. V2 will have dynamic ports for supporting multi instances. For V2, on startup the server writes its port (and a PID) to a small runtime file; the CLI reads that file to find the instance. With multiple instances, each writes its own entry.
 Not now, not for this MVP, but a future choice would be how a V2 instance choose its ports. Two choices :
 
 - Scan upward from a base
 - Bind to port 0
-
-
-V2 auto-selection: scan upward from the base port until one binds, and write the chosen port (with a PID) to a runtime file so the CLI can discover which instance is on which port. Multiple instances each write their own entry. For this MVP the port is 18181 because he's memorable and avoid conflict with famous ports.
 
 ### Third-party clients
 

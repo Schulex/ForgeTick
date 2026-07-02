@@ -544,7 +544,7 @@ MVP broadcast payloads: workflow state transitions (IDLE/RUNNING/STOPPING/STOPPE
 
 FastAPI auto-generates an interactive OpenAPI (Swagger) specification from the endpoint code, served at /docs. This is both the developer reference and the contract any third-party client author reads to build against ForgeTick.
 
-### MVP scope
+### API MVP scope
 
 - The seven HTTP endpoints above; one WebSocket stream broadcasting state + status to all clients.
 - No authentication: single-user local app, the user is whoever is at the machine.
@@ -579,6 +579,61 @@ Lan exposure on the network, by default the server is only on the machine — 12
 Authentication is introduced in V2, so only the clients with the right identity can control the server. Useful in the "home server" scenario with the server expose on the local network. The endpoints shapes are unchanged by this; instances simply gains an identity guard in front.
 
 ## Logging
+
+Logging answers three different questions, for three different readers. ForgeTick therefore keeps three separate log streams, each with its own folder, retention, and durability policy:
+
+- tradelogs — trade events only: orders placed, fills, cancellations, rejections. The "what happened with money" stream — the audit trail.
+- workflowlogs — workflow execution events: engine runs, node executions, state transitions, scheduler fires. The "what is my strategy doing" stream.
+- applogs — application events: server lifecycle, configuration, API activity, errors of the software itself. The "is the software healthy" stream.
+
+### Event routing rule
+
+Every event has exactly one home, classified by subject, not severity. A node crash is a workflow event (workflowlogs, level ERROR). A failed order placement is a trade event (tradelogs). A port-binding failure is an app event (applogs). The same event is never written to two streams.
+
+### Line format
+
+One event per line, fixed field order, human-readable and grep/parse-friendly (key=value for structured fields):
+
+    logs/trades/2026-06-10.log:
+    2026-06-10T14:23:05.123Z INFO workflow=sma-cross node=order-1 event=order_placed side=buy amount=0.01 symbol=BTC/USDT type=market order_id=8837123 status=filled price=42150.30
+
+    logs/workflows/2026-06-10.log:
+    2026-06-10T14:23:05.081Z INFO workflow=sma-cross event=engine_run_start trigger=scheduler
+    2026-06-10T14:23:05.119Z INFO workflow=sma-cross node=sma-fast event=node_executed duration_ms=2
+    2026-06-10T14:23:05.124Z INFO workflow=sma-cross event=engine_run_end result=completed duration_ms=43
+
+    logs/app/2026-06-10.log:
+    2026-06-10T14:20:11.002Z INFO component=server event=startup version=0.1.0 host=127.0.0.1 port=18181
+    2026-06-10T14:20:11.480Z ERROR component=broker event=connection_failed broker=binance error="timeout after 10s"
+
+Timestamps are ISO 8601 with milliseconds, UTC. Levels: INFO / WARN / ERROR.
+
+### Files, rotation, retention
+
+- One folder per stream: logs/trades/, logs/workflows/, logs/app/. One file per day, named by date.
+- Retention (MVP): applogs and workflowlogs are deleted after two weeks. tradelogs are never auto-deleted — trade history is tiny (bytes per trade) and is the user's audit trail.
+- The CLI commands applogs, workflowlogs, tradelogs each stream their file live (equivalent of tail -f), Ctrl-C to exit. Because streams are plain files, every Unix tool (tail, grep, awk) works on them directly — the CLI commands are a convenience, not a gatekeeper.
+- The launch terminal streams a merged live view of all three, each line prefixed for filtering:
+
+    [APP]   2026-06-10T14:20:11Z  server started on 127.0.0.1:18181
+    [FLOW]  2026-06-10T14:23:05Z  sma-cross: engine run completed (43ms)
+    [TRADE] 2026-06-10T14:23:05Z  sma-cross: BUY 0.01 BTC/USDT @ 42150.30 (filled)
+
+### Durability policy (per stream)
+
+Buffering follows each stream's tolerance for losing its final moments in a crash:
+
+- tradelogs: flushed to disk immediately, per event. If the process dies right after an order, the line must already be on disk. Volume is tiny; immediate flushing is free.
+- workflowlogs: buffered, flushed every ~0.250 s or every N records, except ERROR lines flush immediately. Losing the last second of telemetry in a crash is acceptable — SQLite holds authoritative state, and any money event wrote its own durable tradelog line.
+- applogs: default buffering, except ERROR lines flush immediately — the error preceding a crash is precisely the line that must survive it.
+
+In case of an error every buffered line need to be flushed (workflowlogs and applogs).
+
+### Logs MVP scope
+
+- Three streams, daily files, the merged prefixed launch-terminal view, three CLI streaming commands.
+- Two-week purge for app/workflow logs; NO purge for tradelogs.
+- Standard Python logging with default buffering per the policy above; no custom buffer machinery.
 
 ## Repo structure
 

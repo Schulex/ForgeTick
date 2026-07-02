@@ -619,19 +619,19 @@ Timestamps are ISO 8601 with milliseconds, UTC. Levels: INFO / WARN / ERROR.
 - The CLI commands applogs, workflowlogs, tradelogs each stream their file live (equivalent of tail -f), Ctrl-C to exit. Because streams are plain files, every Unix tool (tail, grep, awk) works on them directly — the CLI commands are a convenience, not a gatekeeper.
 - The launch terminal streams a merged live view of all three, each line prefixed for filtering:
 
-    [APP]   2026-06-10T14:20:11Z  server started on 127.0.0.1:18181
-    [FLOW]  2026-06-10T14:23:05Z  sma-cross: engine run completed (43ms)
-    [TRADE] 2026-06-10T14:23:05Z  sma-cross: BUY 0.01 BTC/USDT @ 42150.30 (filled)
+    [APP]   2026-06-10T14:20:11.002Z INFO component=server event=startup version=0.1.0 host=127.0.0.1 port=18181
+    [WORKFLOW]  2026-06-10T14:23:05.081Z INFO workflow=sma-cross event=engine_run_start trigger=scheduler
+    [TRADE] 2026-06-10T14:23:05.123Z INFO workflow=sma-cross node=order-1 event=order_placed side=buy amount=0.01 symbol=BTC/USDT type=market order_id=8837123 status=filled price=42150.30
 
 ### Durability policy (per stream)
 
 Buffering follows each stream's tolerance for losing its final moments in a crash:
 
 - tradelogs: flushed to disk immediately, per event. If the process dies right after an order, the line must already be on disk. Volume is tiny; immediate flushing is free.
-- workflowlogs: buffered, flushed every ~0.250 s or every N records, except ERROR lines flush immediately. Losing the last second of telemetry in a crash is acceptable — SQLite holds authoritative state, and any money event wrote its own durable tradelog line.
-- applogs: default buffering, except ERROR lines flush immediately — the error preceding a crash is precisely the line that must survive it.
+- workflowlogs: default buffering, any ERROR record immediately flushes the entire workflowlogs's buffer and applogs's buffer (context lines + error).
+- applogs: default buffering, any ERROR record immediately flushes the entire workflowlogs's buffer and applogs's buffer (context lines + error).
 
-In case of an error every buffered line need to be flushed (workflowlogs and applogs).
+Residual loss window applies only to deaths the process cannot detect (power loss, SIGKILL), where no error record exists to trigger on.
 
 ### Logs MVP scope
 
@@ -643,7 +643,7 @@ In case of an error every buffered line need to be flushed (workflowlogs and app
 
 - Per-stream retention settings (V2): user-configurable keep-durations per stream, replacing the fixed two-week rule.
 - Rotation + compression (V2): gzip files older than one day (text logs compress ~10–20×), then purge per retention policy. Required before the market-tick trigger ships — tick workflows can emit gigabytes/day of workflowlogs uncompressed.
-- Non-blocking logging (V2, with tick trigger): QueueHandler/QueueListener so file I/O never blocks the event loop; flush intervals ~1 s.
+- Non-blocking logging (V2, with tick trigger): QueueHandler/QueueListener so file I/O never blocks the event loop; flush intervals ~0.5 s.
 - JSONL output option (V2+): a config switch to emit JSON-lines instead of key=value for users feeding logs into external tooling. The field structure above is already designed to survive that switch unchanged.
 
 ## Repo structure

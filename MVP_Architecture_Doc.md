@@ -52,6 +52,9 @@ Future architectural features : (needed in the future for the future features)
 - Schedule at each market ticks, for market tick trading
 - Schedule in a loop, for logics needing to loop (example : LLM analyst)
 - Ports auto-selection, for multi-instances
+- Logs rotation + compression, for managing huge amount of logs
+- Non-blocking logging, QueueHandler/QueueListener, for writing huge amount of logs
+- JSONL output option, for users feeding logs into external tooling
 
 Future features :
 
@@ -68,6 +71,7 @@ Future features :
 - Link to N8N
 - Third-party clients
 - Authentication
+- Per-stream logs retention settings
 
 ### Node groups
 
@@ -634,6 +638,13 @@ In case of an error every buffered line need to be flushed (workflowlogs and app
 - Three streams, daily files, the merged prefixed launch-terminal view, three CLI streaming commands.
 - Two-week purge for app/workflow logs; NO purge for tradelogs.
 - Standard Python logging with default buffering per the policy above; no custom buffer machinery.
+
+### Logging Future-proofing
+
+- Per-stream retention settings (V2): user-configurable keep-durations per stream, replacing the fixed two-week rule.
+- Rotation + compression (V2): gzip files older than one day (text logs compress ~10–20×), then purge per retention policy. Required before the market-tick trigger ships — tick workflows can emit gigabytes/day of workflowlogs uncompressed.
+- Non-blocking logging (V2, with tick trigger): QueueHandler/QueueListener so file I/O never blocks the event loop; flush intervals ~1 s.
+- JSONL output option (V2+): a config switch to emit JSON-lines instead of key=value for users feeding logs into external tooling. The field structure above is already designed to survive that switch unchanged.
 
 ## Repo structure
 

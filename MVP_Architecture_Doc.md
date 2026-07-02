@@ -570,6 +570,10 @@ Not now, not for this MVP, but a future choice would be how a V2 instance choose
 
 Third-party clients are a native consequence of the server-as-source-of-truth design: any program speaking the versioned HTTP+WebSocket contract is a valid client, indistinguishable from the built-in GUI/CLI. Preserved (not built) by three cheap disciplines already adopted — API versioning, treating the API as a public contract, and the free OpenAPI docs. No formal plugin system, client SDK, or client-auth in the MVP; the clean versioned API is the whole enabler.
 
+### LAN exposure
+
+Lan exposure on the network, by default the server is only on the machine — 127.0.0.1. An option in the settings can exposed the server to all network — 0.0.0.0. The app need to restart to enable this option. When this setting is change from 127.0.0.1 to 0.0.0.0, a warning should pop at the screen and another warning need to be next to the option. When ForgeTick starts in exposed mode, it should print a warning line in the launch terminal ("⚠ listening on 0.0.0.0 — anyone on your network can control this instance; never expose to the internet"). This option to exposed ForgeTick is for the headless use for the "home server" scenario. This option justify the authentication feature in V2.
+
 ### Authentication
 
 Authentication is introduced in V2, so only the clients with the right identity can control the server. Useful in the "home server" scenario with the server expose on the local network. The endpoints shapes are unchanged by this; instances simply gains an identity guard in front.

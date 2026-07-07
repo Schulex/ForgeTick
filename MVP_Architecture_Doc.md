@@ -691,10 +691,102 @@ Residual loss window applies only to deaths the process cannot detect (power los
 
 ## Repo structure
 
+The repository contains code. User data — workflows, API keys, database, logs — is created at runtime in a separate data directory and is never inside the package. The repo is ForgeTick's territory; the data directory is the user's.
 
+### Top level
 
+    ForgeTick/                          (github.com/Schulex/ForgeTick)
+    ├── LICENSE                         AGPL-3.0 — present from commit #1
+    ├── DISCLAIMER.md                   trading-risk disclaimer
+    ├── README.md                       install, quickstart, disclaimer banner
+    ├── ARCHITECTURE.md                 this document
+    ├── pyproject.toml                  package definition, dependencies, CLI entry point
+    ├── .gitignore                      excludes data directories, builds, caches
+    ├── src/forgetick/                  the Python package (backend + CLI)
+    ├── frontend/                       React/Vite/TypeScript app (GUI source)
+    ├── examples/                       example workflows (technical demos, e.g. sma_crossover.json)
+    └── tests/                          pytest suite
 
+LICENSE, DISCLAIMER, README and ARCHITECTURE sit at the root deliberately: they are the first files a visitor reads when judging the project, and the first two are launch requirements of the Legal Pre-Screen.
 
+### Backend package
 
+    src/forgetick/
+    ├── __init__.py                     version
+    ├── __main__.py                     python -m forgetick → starts the server
+    ├── server/
+    │   ├── app.py                      FastAPI init, WebSocket hub, static-files mount
+    │   ├── routes_v1.py                the /api/v1/ endpoints (§ API surface)
+    │   ├── websocket.py                broadcast hub: state changes → all clients
+    │   └── static/                     built frontend (generated at build, not committed)
+    ├── execution/
+    │   ├── manager.py                  WorkflowManager (§ Layers of the execution model)
+    │   ├── runner.py                   WorkflowRunner: lifecycle states, stop flag, scheduler timing
+    │   └── engine.py                   the engine pass (§ Execution model & nodes)
+    ├── nodes/
+    │   ├── base.py                     Node base class + registry + @register (§ Registry)
+    │   ├── candle_source.py  sma.py  ema.py  rsi.py  comparison.py
+    │   └── logic.py  scheduler.py  order.py  chart_output.py      (the 9 MVP nodes)
+    ├── broker/
+    │   ├── adapter.py                  abstract BrokerAdapter (§ Broker layer)
+    │   └── binance.py                  BinanceAdapter wrapping CCXT
+    ├── persistence/
+    │   ├── db.py                       SQLite + SQLAlchemy setup
+    │   ├── models.py                   runtime-state tables
+    │   └── recovery.py                 clean/unclean detection, broker reconciliation (§ Persistence & recovery)
+    ├── logstreams.py                   three-stream logging + merged launch-terminal view (§ Logging)
+    └── cli/
+        └── main.py                     the 9 client commands + serve
 
+The src/ layout is the modern Python packaging standard: tests run against the installed package rather than whatever sits in the working directory, catching packaging mistakes early. Folder names mirror this document's sections, so the doc maps one-to-one onto the code. The scheduler node class lives in nodes/ (registered and visible in the editor like any node); the timing machinery that acts on its config lives in the runner — the same split as everywhere in the architecture: nodes declare, the execution layer acts.
 
+### Frontend
+
+    frontend/
+    ├── package.json   vite.config.ts   tsconfig.json   index.html
+    └── src/
+        ├── App.tsx                     layout: top bar, side bar, node editor (§ GUI Layout, MVP Spec)
+        ├── editor/                     React Flow canvas, node rendering, port typing
+        ├── panels/                     Running Workflows, Node Library, Example Workflows, Settings
+        └── api/                        typed client for /api/v1 + the WebSocket subscription
+
+Development mode: the Vite dev server (hot reload) proxies API calls to the backend on 18181. Shipping mode: the frontend is built to static files, bundled inside the Python package (server/static/), and served by FastAPI itself. Users installing with pip never need Node.js — only contributors working on the GUI do. This keeps the "install in under 10 minutes" success criterion honest.
+
+### Data directory (runtime — not in the repo)
+
+Created on first run in the directory ForgeTick is launched from (the transparent ComfyUI model: everything in one visible place), overridable with --data-dir:
+
+    <data-dir>/
+    ├── config.toml                     host/port, default broker, broker API keys (local only, never logged)
+    ├── forgetick.db                    SQLite runtime state (§ Persistence & recovery)
+    ├── workflows/                      the user's workflow JSONs
+    └── logs/
+        ├── app/   workflows/   trades/     one folder per stream, daily files (§ Logging)
+
+This directory is the user's property: his strategies, his keys, his audit trail. .gitignore excludes it, so a cloned repo can never accidentally commit API keys. A user who wants his workflows under version control puts <data-dir>/workflows/ in his own git repository — cleanly separated from ForgeTick's code.
+
+### Entry points
+
+pyproject.toml declares one console command: forgetick. forgetick serve starts the server in the foreground — its terminal is the merged-log launch terminal (§ Logging); python -m forgetick is equivalent. The nine client commands (run, stop, kill, status, list, applogs, workflowlogs, tradelogs, help) talk to the running server on port 18181.
+
+### Tests
+
+    tests/
+    ├── test_engine.py                  topological order, stop-between-nodes, timeouts
+    ├── test_nodes.py                   each node's execute() against known data
+    ├── test_broker.py                  adapter against mocks / Binance testnet
+    └── test_recovery.py                clean/unclean detection, reconciliation
+
+Test priority mirrors risk: the engine and recovery are where trust lives. The GUI is tested by clicking (MVP scope).
+
+### MVP scope
+
+Monorepo: one repository, one issue tracker, one release tag covering matched backend + frontend.
+The tree above, complete.
+Recommended from day one: a minimal CI (.github/workflows/ci.yml running pytest and a linter on every push) — cheap, and the green checkmark is exactly the "is this project maintained?" signal the target user checks before installing.
+
+### Future-proofing
+
+- Custom nodes (V2): loaded from <data-dir>/custom_nodes/, scanned by the same registry that loads built-ins — user code stays in user territory, zero engine changes. Built-ins live inside the installed package, so the two can never be confused or deleted together. Registry collision policy (a custom node claiming a built-in type name) is defined with the V2 feature.
+- PyPI release: the package name is reserved; pip install forgetick ships backend + built frontend in one wheel. The structure above supports it unchanged.
+- If the frontend ever needs its own release cycle, frontend/ becomes a workspace — a reorganization, not a redesign.

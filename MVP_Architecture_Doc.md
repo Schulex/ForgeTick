@@ -79,8 +79,19 @@ NOT in this MVP but in the future, some nodes with real-side effect can work tog
 
 ### Concurrency & Parallelism
 
-Concurrency for all nodes by default; process-isolation (run_in_executor + process pool) reserved for individually CPU-heavy nodes (local LLM, heavy compute).
-A dedicated "priority engine or priority workflow" running in parallel as the eventual answer for latency-sensitive tick strategies — never generalized per-node parallelism, which costs more overhead than it saves.
+Default: all nodes run on the single asyncio event loop. Escapes are decided per node by one question — does the call block the loop, and does it hold the GIL while blocking?
+
+Four type of nodes :
+
+- tiny compute (normal nodes)      SMA, EMA, comparison, logic      run directly on the loop
+- async-capable I/O wait           Binance via CCXT, HTTP APIs      native await — asyncio's home turf
+- blocking wait / C-level work     embedded LLM lib, GPU inference  run_in_executor + THREAD
+- pure-Python heavy compute        custom math node, pure loops     run_in_executor + PROCESS
+
+The per-node timeout guard (§ Lifecycle) applies wherever a node executes.
+Generalized per-node parallelism remains excluded: shipping cost exceeds the work for fast nodes.
+
+Latency-sensitive tick strategies (future): isolation at workflow / trigger-domain granularity — never per node. A tick workflow may run in its own process bundling its own event loop, its own WebSocket market-data stream, and its own BrokerAdapter instance, eliminating jitter from unrelated workflows. Accepted cost: status/P&L reporting crosses a process boundary back to the server. Process-isolated workflows/domains (V2/V3): manager control (stop/kill flags) and status/P&L reporting both cross the process boundary via a small control+status channel between WorkflowManager and the child process.
 
 ### North Star Workflow
 
@@ -219,7 +230,7 @@ Example of node with memory :
 
 Essential nodes needed to build a SMA crossover strategy.
 
-1. Candle data source — fetches OHLCV candles from Binance for a
+1. Candle Data Source — fetches OHLCV candles from Binance for a
 chosen symbol and timeframe
 2. SMA — Simple Moving Average
 3. EMA — Exponential Moving Average
@@ -228,23 +239,53 @@ chosen symbol and timeframe
 between two inputs
 6. Logic — AND, OR, NOT on boolean inputs (combine multiple
 conditions)
-7. Scheduler — runs the workflow every N seconds, or at
-specific times
-8. Order placement — sends a market or limit order to Binance
-9. Chart output — displays a signal over time in the node in the GUI
+7. Time Interval Scheduler — runs the workflow every N seconds
+8. Order Placement — sends a market or limit order to Binance
+9. Chart Output — displays a signal over time in the node in the GUI
 
 ### Scheduler
 
-A scheduler is the only node at the top of a trigger domain. Only the scheduler can trigger the execution of a domain, the scheduler is the sole start node. Each trigger domains has one scheduler. The source nodes that begin the logic of the trigger domain are wired to the scheduler.
+A scheduler is the sole start node of a trigger domain: only its firing triggers an engine run of that domain, and every source node of the domain is wired to it by a trigger connection. The Message-passing node is considered as a source node from the point of view of the trigger domain below, this node need to be wired to the scheduler. One scheduler per domain.
 
-Schedulers are wired to explicitly know which scheduler owns which nodes and to clearly define each trigger domains.
+Types:
 
-Schedulers trigger options :
+- Time Interval Scheduler (MVP) — fixed-rate only: fires every N milliseconds/seconds/minutes/hours by the clock, independent of run duration.
+- Specific Time Scheduler (future) — fires at a configured list of clock times, each entry marked recurring (daily) or once.
+- Market Tick Scheduler (future) — fires per tick from a streaming market-data source. overlap policy is mandatory here (ticks outpace runs by design).
+- Loop Scheduler (future) — fixed-delay: refires when the previous run returns, after config delay (default=0, milliseconds/seconds/minutes/hours). The runner knows completion trivially — it awaits the engine call and refires on return.
 
-- Runs the workflow every N seconds (from 1ms to infinity)
-- Runs the workflow at specific times
-- Runs the workflow at each market ticks (NOT in this MVP, future feature)
-- Runs the workflow in a loop (NOT in this MVP, future feature)
+Activation windows (Every schedulers) : a scheduler may be configured active only between given times (e.g. market open → close). Outside its window it does not fire. A window closing mid-run does not interrupt the run (per-node atomicity, § Lifecycle) and cancels nothing — a window pauses triggering; it is not a stop. Window times are stored timezone-explicit; unused in the MVP for 24/7 crypto, designed in now.
+
+Gate (Every schedulers) : Optional condition input (V2, future): a non-triggering boolean gate, mailbox-latest semantics, default 1/active, evaluated at fire time; gate=0 pauses the fire. For example, useful for stoping a loop. The gate can be seen as the activation windows at the level of behavior; the gate pauses the triggering; it is not a stop.
+
+The gate and the activation windows never causes execution — the "only schedulers trigger" invariant holds. However, when the activation windows open or when the gate passes at one, this is what happened to each scheduler :
+
+- The Time Interval Scheduler will start again by firing a trigger
+- The Specific Time Scheduler will wait until its next configured fire, if he doesn't have any configured fire left the workflow will be marked as COMPLETED
+- The Market Tick Scheduler will trigger normally at the next market tick.
+- The Loop Scheduler will start again by firing a trigger
+
+Workaround pattern (MVP): daily-at-a-time firing ≈ activation window of one minute + interval larger than the window (e.g. window 18:00–18:01, interval 5 min → one run per day at 18:00).
+
+Time is always stored and expressed in timezone-explicit.
+
+A scheduler whose entries are exhausted triggers workflow COMPLETED (§Lifecycle).
+
+MVP overlap policy: a fire arriving while the domain's previous run is in progress is skipped with a warning — one domain never runs twice concurrently.
+
+Overlap policy (V2/V3, per-scheduler config) :
+
+- Skip (default)
+- Bounded pipeline
+- Bounded queue
+
+The bounded queue is size-limited and drop-oldest with warning — unbounded queues are excluded : memory growth under load, and oldest queued runs execute against stale market data. The default bound is N=10.
+
+The bounded pipeline is size-limited and drop-newest with warning — drop oldest is excluded : it's wasteful to cut the engine at 95% and even worse than wasteful it's DANGEROUS if the run has already placed an entry order and hasn't reached the stop-loss node yet. And even a graceful abort doesn't free a slot instantly (STOPPING takes time), so it wouldn't even help the incoming fire. The default bound is N=10.
+
+"Stop on overlap" is deliberately not offered: shedding load must not become an outage at the busiest moment.
+
+Overlapping runs of the same domain touch the same stateful node instances. Newest runs will also require the node state of the previous run. If there are 4 engines on one trigger domain, each run depends on the previous for updated nodes states. To avoid any node state problem when running in pipeline, engine must NEVER overtake each other and always run down the trigger domain using the same node order.
 
 ### Registry
 
@@ -343,9 +384,11 @@ The WorkflowRunner is a state machine
 - RUNNING — scheduler is ticking, engine runs the graph each tick
 - STOPPING — asked to stop; finishing safely, cancelling orders
 - STOPPED — fully halted, state saved
+- COMPLETED — the workflow's scheduler(s) have no future fires (once-only times exhausted; permanently-closed gate)
 - ERRORED — something threw; treated like STOPPING but flagged for the user
 
 The WorkflowManager tracks every WorkflowRunner's state. That collection of states is what status returns and what the Running Workflows panel renders.
+Unlike STOPPED, completion cancels nothing: resting orders remain at the broker, positions untouched, the runner is released. Stop = abort and make safe (cancel open orders); Complete = natural end of triggering (leave market state as-is). Transition RUNNING → COMPLETED. Not reachable in the MVP (the Interval Scheduler never completes); state reserved and designed now. Orphaned resting orders after completion are owned by the broker and covered by reconciliation.
 
 ### Graceful stop
 

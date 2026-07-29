@@ -691,7 +691,7 @@ Residual loss window applies only to deaths the process cannot detect (power los
 
 ## Repo structure
 
-The repository contains code. User data — workflows, API keys, database, logs — is created at runtime in a separate data directory and is never inside the package. The repo is ForgeTick's territory; the data directory is the user's.
+The repository contains code. User data — workflows, API keys, database, logs — is in a separate data directory and is never inside the package. The repo is ForgeTick's territory; the data directory is the user's.
 
 ### Top level
 
@@ -752,6 +752,84 @@ The src/ layout is the modern Python packaging standard: tests run against the i
 
 Development mode: the Vite dev server (hot reload) proxies API calls to the backend on 18181. Shipping mode: the frontend is built to static files, bundled inside the Python package (server/static/), and served by FastAPI itself. Users installing with pip never need Node.js — only contributors working on the GUI do. This keeps the "install in under 10 minutes" success criterion honest.
 
+## Data strucutre
+
+User data lives in a data directory and is never inside the package. The repo is ForgeTick's territory; the data directory is the user's
+
+### Location/Openning/Creation data directory
+
+ForgeTick can installed via pip, via a cloned repo, or via a portable version (in the future). The data directoy's location depend of the installation mode used. When ForgeTick is launch the option --data-dir "path" can be used to select a specific data directory. ForgeTick keep a file in his repo with the path of the last data directory. This file must be in the .gitignore.
+The data directory folder is named "ForgeTick_Data_Directory_XXX". The three XX at the end is enable the posibility to have multiple data directory in the same folder, the three XXX represents numbers ranging form 000 to 999.
+
+The comportement of ForgeTick about the data directoy when it's launching :
+ForgeTick follow precise step if the step fail ForgeTick jump to the next step. If the step is a sucess and ForgeTick find a data directory, ForgeTick stop at this step and open with this data directory.
+
+Launching ForgeTick when it is installed via pip :
+1/ ForgeTick check for --data-dir
+2/ ForgeTick check for the last data directory
+3/ ForgeTick use platformdirs
+4/ ForgeTick create a new data directory using platformdirs
+
+platformdirs is used because we have no idea on which OS ForgeTick is on. With platformdirs the data directory alwayys find itself at the same place.
+
+Launching ForgeTick when it is installed via a cloned repo, or via a portable version (in the future) :
+1/ ForgeTick check for --data-dir
+2/ ForgeTick check for the last data directory
+3/ ForgeTick check if there is a data directory next to the repo folder
+4/ ForgeTick create a new data directory next to the repo folder
+
+Example for points 3 and 4 of installation via cloned repo or via portable version :
+    Random_Folder
+    ├── ForgeTick                           ForgeTick Repo Folder
+    ├── ForgeTick_Data_Directory_000        ForgeTick Data directory Folder
+
+If two or multiple data directory folder are next to each other in the same folder. ForgeTick give the priority to the one with the smallest number and open this one.
+
+### Structure data directory
+
+    ForgeTick_Data_Directory_00/
+    ├── config
+    │   ├── config_user_1.toml              host/port, default broker, broker API keys (local only, never logged)
+    │   ├── config_user_2.toml              host/port, default broker, broker API keys (local only, never logged)
+    │   ├── config_user_3.toml              host/port, default broker, broker API keys (local only, never logged)
+    │   ...
+    ├── database
+    │   ├── forgetick_user_1_instance_1.db  SQLite runtime state (§ Persistence & recovery)
+    │   ├── forgetick_user_1_instance_2.db  SQLite runtime state (§ Persistence & recovery)
+    │   ├── forgetick_user_2_instance_1.db  SQLite runtime state (§ Persistence & recovery)
+    │   ├── forgetick_user_3_instance_1.db  SQLite runtime state (§ Persistence & recovery)
+    │   ├── forgetick_user_3_instance_2.db  SQLite runtime state (§ Persistence & recovery)
+    │   ├── forgetick_user_3_instance_3.db  SQLite runtime state (§ Persistence & recovery)
+    │   ...   
+    ├── workflows/                          the user's workflow JSONs
+    ├── custom_nodes/                       the user's custom nodes (V2 — scanned by the registry)
+    ├── custom_brokers/                     the user's custom brokers (V2)
+    └── logs/
+        ├── user_1
+        │   └── app/   workflows/   trades/     one folder per stream, daily files (§ Logging)
+        ├── user_2
+        │   └── app/   workflows/   trades/     one folder per stream, daily files (§ Logging)
+        ├── user_3
+        │   └── app/   workflows/   trades/     one folder per stream, daily files (§ Logging)
+        ...
+
+This directory is the user's property: his strategies, his keys, his audit trail. .gitignore excludes it, so a cloned repo can never accidentally commit API keys. A user who wants his workflows under version control puts <data-dir>/workflows/ in his own git repository — cleanly separated from ForgeTick's code.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 ### Data directory (runtime — not in the repo)
 
 Created on first run in the directory ForgeTick is launched from (the transparent ComfyUI model: everything in one visible place), overridable with --data-dir:
@@ -760,6 +838,7 @@ Created on first run in the directory ForgeTick is launched from (the transparen
     ├── config.toml                     host/port, default broker, broker API keys (local only, never logged)
     ├── forgetick.db                    SQLite runtime state (§ Persistence & recovery)
     ├── workflows/                      the user's workflow JSONs
+    ├── custom_nodes/                   the user's custom nodes (V2 — scanned by the registry)
     └── logs/
         ├── app/   workflows/   trades/     one folder per stream, daily files (§ Logging)
 

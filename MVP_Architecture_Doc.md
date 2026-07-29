@@ -607,7 +607,7 @@ One user per-instance and multi instances, NOT one instance with multiple user !
 
 ### Ports
 
-MVP has one instance on a fixed default port, the port is 18181 because it's memorable and avoid conflict with famous ports. V2 will have dynamic ports for supporting multi instances. For V2, on startup the server writes its port (and a PID) to a small runtime file; the CLI reads that file to find the instance. With multiple instances, each writes its own entry.
+MVP has one instance on a fixed default port, the port is 18181 because it's memorable and avoid conflict with famous ports. For this MVP the first instance use port 18181, the port number increment by 1 for each new instance. V2 will have dynamic ports for supporting multi instances. For V2, on startup the server writes its port (and a PID) to a small runtime file; the CLI reads that file to find the instance. With multiple instances, each writes its own entry.
 Not now, not for this MVP, but a future choice would be how a V2 instance choose its ports. Two choices :
 
 - Scan upward from a base
@@ -752,9 +752,23 @@ The src/ layout is the modern Python packaging standard: tests run against the i
 
 Development mode: the Vite dev server (hot reload) proxies API calls to the backend on 18181. Shipping mode: the frontend is built to static files, bundled inside the Python package (server/static/), and served by FastAPI itself. Users installing with pip never need Node.js — only contributors working on the GUI do. This keeps the "install in under 10 minutes" success criterion honest.
 
+### Entry points
+
+pyproject.toml declares one console command: forgetick. forgetick start starts the server in the foreground — its terminal is the merged-log launch terminal (§ Logging); python -m forgetick is equivalent. The nine client commands (run, stop, kill, status, list, applogs, workflowlogs, tradelogs, help) talk to the running server on port 18181.
+
+### Tests
+
+    tests/
+    ├── test_engine.py                  topological order, stop-between-nodes, timeouts
+    ├── test_nodes.py                   each node's execute() against known data
+    ├── test_broker.py                  adapter against mocks / Binance testnet
+    └── test_recovery.py                clean/unclean detection, reconciliation
+
+Test priority mirrors risk: the engine and recovery are where trust lives. The GUI is tested by clicking (MVP scope).
+
 ## Data strucutre
 
-User data lives in a data directory and is never inside the package. The repo is ForgeTick's territory; the data directory is the user's
+Users data lives in a data directory and is never inside the package. The repo is ForgeTick's territory; the data directory is the users's
 
 ### Location/Openning/Creation data directory
 
@@ -813,7 +827,7 @@ If two or multiple data directory folder are next to each other in the same fold
         │   └── app/   workflows/   trades/     one folder per stream, daily files (§ Logging)
         ...
 
-This directory is the user's property: his strategies, his keys, his audit trail. .gitignore excludes it, so a cloned repo can never accidentally commit API keys. A user who wants his workflows under version control puts <data-dir>/workflows/ in his own git repository — cleanly separated from ForgeTick's code.
+This directory is the users's property: their strategies, their keys, their audit trail. The data directory is outside ForgeTick repo, so a cloned repo can never accidentally commit API keys. A user who wants his workflows under version control puts ForgeTick_Data_Directory_00/workflows/ in his own git repository — cleanly separated from ForgeTick's code.
 
 
 
@@ -830,33 +844,7 @@ This directory is the user's property: his strategies, his keys, his audit trail
 
 
 
-### Data directory (runtime — not in the repo)
 
-Created on first run in the directory ForgeTick is launched from (the transparent ComfyUI model: everything in one visible place), overridable with --data-dir:
-
-    <data-dir>/
-    ├── config.toml                     host/port, default broker, broker API keys (local only, never logged)
-    ├── forgetick.db                    SQLite runtime state (§ Persistence & recovery)
-    ├── workflows/                      the user's workflow JSONs
-    ├── custom_nodes/                   the user's custom nodes (V2 — scanned by the registry)
-    └── logs/
-        ├── app/   workflows/   trades/     one folder per stream, daily files (§ Logging)
-
-This directory is the user's property: his strategies, his keys, his audit trail. .gitignore excludes it, so a cloned repo can never accidentally commit API keys. A user who wants his workflows under version control puts <data-dir>/workflows/ in his own git repository — cleanly separated from ForgeTick's code.
-
-### Entry points
-
-pyproject.toml declares one console command: forgetick. forgetick serve starts the server in the foreground — its terminal is the merged-log launch terminal (§ Logging); python -m forgetick is equivalent. The nine client commands (run, stop, kill, status, list, applogs, workflowlogs, tradelogs, help) talk to the running server on port 18181.
-
-### Tests
-
-    tests/
-    ├── test_engine.py                  topological order, stop-between-nodes, timeouts
-    ├── test_nodes.py                   each node's execute() against known data
-    ├── test_broker.py                  adapter against mocks / Binance testnet
-    └── test_recovery.py                clean/unclean detection, reconciliation
-
-Test priority mirrors risk: the engine and recovery are where trust lives. The GUI is tested by clicking (MVP scope).
 
 ### MVP scope
 

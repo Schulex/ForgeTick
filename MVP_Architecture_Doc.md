@@ -772,7 +772,7 @@ Users data lives in a data directory and is never inside the package. The repo i
 
 ### Location/Openning/Creation data directory
 
-ForgeTick can installed via pip, via a cloned repo, or via a portable version (in the future). The data directoy's location depend of the installation mode used. When ForgeTick is launch the option --data-dir "path" can be used to select a specific data directory. ForgeTick keep a file in his repo with the path of the last data directory. This file must be in the .gitignore.
+ForgeTick can installed via pip, via a cloned repo, or via a portable version (in the future). The data directoy's location depend of the installation mode used. When ForgeTick is launch the option --data-dir "path" can be used to select a specific data directory. ForgeTick keep a file in his repo with the path of the last opened/used data directory. This file must be in the .gitignore.
 The data directory folder is named "ForgeTick_Data_Directory_XXX". The three XX at the end is enable the posibility to have multiple data directory in the same folder, the three XXX represents numbers ranging form 000 to 999.
 
 The comportement of ForgeTick about the data directoy when it's launching :

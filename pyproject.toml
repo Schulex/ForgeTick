@@ -1,12 +1,13 @@
 [build-system]
-requires = ["setuptools>=61.0"]
+requires = ["setuptools>=77.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "forgetick"
 version = "0.0.1"
-description = "Open-source node-based trading framework (placeholder)"
+description = "Open-source node-based trading automation framework"
 readme = "README.md"
 requires-python = ">=3.11"
-license = {text = "AGPL-3.0"}
+license = "AGPL-3.0-or-later"
+license-files = ["LICENSE"]
 authors = [{name = "Florian Schulé"}]

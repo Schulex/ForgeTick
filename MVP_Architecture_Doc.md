@@ -1,4 +1,4 @@
-# Architecture Doc
+# MVP Architecture Doc
 
 version : MVP
 
@@ -6,25 +6,22 @@ version : MVP
 
 ### Presentation
 
-The concept is to make the N8N / ComfyUI of the trading world. N8N and
-ComfyUI are node based app where you can create workflow by linking the nodes
-together to automate some process.
-The Idea is to create an app that use the power of node based workflow to
-automate trading orders and send them to the user’s Broker.
-This app, called ForgeTick, sits between the user and the broker’s API. The
-user will not use his logic to trade directly himself anymore, he will put his logic on a
-workflow. After this, ForgeTick will execute the workflow and send the trading order
-to the broker’s API. The user will not anymore execute his logic and tell the trade
-order to the Broker, everything will be automated by the workflow he created using
-his logic.
+The concept is to make the N8N / ComfyUI of the trading world. N8N and ComfyUI are node based app where you can create workflow by linking the nodes together to automate some process.
+The Idea is to create an app that use the power of node based workflow to automate trading orders and send them to the user's Broker.
+This app, called ForgeTick, sits between the user and the broker's API. The user will not use his logic to trade directly himself anymore, he will put his logic on a workflow. After this, ForgeTick will execute the workflow and send the trading order to the broker's API. The user will not anymore execute his logic and tell the trade order to the Broker, everything will be automated by the workflow he created using his logic.
 
 ## Goal of this MVP Architecture Doc
 
 ## Vocabulary
 
 - Trigger domains — A trigger domain is a branch of a workflow, each branch has its own scheduler.
-- Engine run —  When an engine is doing a pass on a trigger domain and executing every nodes.
+- Engine run — When an engine is doing a pass on a trigger domain and executing every nodes.
 - Node execution — When an engine execute a specific node in a trigger domain of a workflow, "node.execute" in the engine.
+- Instance — One running ForgeTick server, with its own name, its own port, its own database and its own logs. Multiple instances can be launched from a single installation.
+- Data directory — The user's territory: workflows, credentials, custom code, and one folder per instance. Never inside the repo.
+- Installation — One copy of the ForgeTick code (pip install, cloned repo, or portable). One installation can launch many instances.
+- Run — One activation of a workflow by a runner. Has a name (auto-renamed on collision) and a run id.
+- Credential profile — A named block of broker API keys, stored once at the data directory root and referenced by name.
 
 ## Future-proofing decisions
 
@@ -38,7 +35,7 @@ Architectural features for future features : (already needed for the future feat
 - Registry between node class and node type, is to add custom node later
 - The abstract BrokerAdapter interface, is the extension point for multi-broker support
 - CCXT, already abstracts 100+ exchanges, non-CCXT brokers would implement the same interface differently inside.
-- One user per-instance and multi instances, keep the security model sound, cash isolation and no catastrophic single honeypot
+- Run ids in every trade log line, so the permanent audit trail keys on something that is never recycled
 
 Future architectural features : (needed in the future for the future features)
 
@@ -51,7 +48,6 @@ Future architectural features : (needed in the future for the future features)
 - WebSocket market data stream, is for market ticks trading
 - Schedule at each market ticks, for market tick trading
 - Schedule in a loop, for logics needing to loop (example : LLM analyst)
-- Ports auto-selection, for multi-instances
 - Logs rotation + compression, for managing huge amount of logs
 - Non-blocking logging, QueueHandler/QueueListener, for writing huge amount of logs
 - JSONL output option, for users feeding logs into external tooling
@@ -59,14 +55,16 @@ Future architectural features : (needed in the future for the future features)
 Future features :
 
 - Non-Sequential execution of workflows
-- Scheduler option to runs the workflow at each market ticks
-- Scheduler option to runs the workflow in a loop
-- Trigger domain
 - Easily add new Brokers
+- Custom brokers
 - Editor showing brokers capabilities
 - OpenClaw and LLM agent
 - Simulation mode
 - Custom nodes
+- Scheduler to runs the workflow at each market ticks
+- Scheduler to runs the workflow in a loop
+- Scheduler to runs at specific time
+- Scheduler Windows & gate
 - Large variety of nodes
 - Link to N8N
 - Third-party clients
@@ -97,7 +95,7 @@ Latency-sensitive tick strategies (future): isolation at workflow / trigger-doma
 
 Workflow example to see as a north star. A market-mood workflow.
 
-The goal is to be able to execute workflows with this type of complexity later on. Not right now because it’s not the point of this MVP. However this example workflow would be a great example to test the app and see if we are going in the right path. the goal is to be able to do a workflow with a part that use LLM to analyze the mood of the market. And another part with multiple strategy already built in the workflow. With the LLM part choosing if one strategy suits the mood among the many strategies to choose from in the workflow and execute the strategy. This is an idea about a workflow adapting to the mood of the market. But each strategy probably doesn’t has the same timeframe. One strategy will work on a 1h timeframe, another one will work on 10min timeframe and a third one will work on market tick directly. And the LLM part will just loop back each time it finishes. This means multiple schedulers in the same workflow with different time and schedulers working on market tick and schedulers working on looping back directly for the LLM part. With each scheduler having this own trigger domain. Each scheduler summoning engines when it trigger to run all the nodes in its domain. With message-passing between trigger domain using the message-passing-node.
+The goal is to be able to execute workflows with this type of complexity later on. Not right now because it's not the point of this MVP. However this example workflow would be a great example to test the app and see if we are going in the right path. the goal is to be able to do a workflow with a part that use LLM to analyze the mood of the market. And another part with multiple strategy already built in the workflow. With the LLM part choosing if one strategy suits the mood among the many strategies to choose from in the workflow and execute the strategy. This is an idea about a workflow adapting to the mood of the market. But each strategy probably doesn't has the same timeframe. One strategy will work on a 1h timeframe, another one will work on 10min timeframe and a third one will work on market tick directly. And the LLM part will just loop back each time it finishes. This means multiple schedulers in the same workflow with different time and schedulers working on market tick and schedulers working on looping back directly for the LLM part. With each scheduler having this own trigger domain. Each scheduler summoning engines when it trigger to run all the nodes in its domain. With message-passing between trigger domain using the message-passing-node.
 
 ## Component Map Diagram
 
@@ -110,9 +108,9 @@ The goal is to be able to execute workflows with this type of complexity later o
            └──────────────┬──────────────┘
                           ▼
         ┌────────────────────────────────┐
-        │        BACKEND SERVER          │  ◄── Server owns 
+        │        BACKEND SERVER          │  ◄── Server owns
         │           (FastAPI)            │    execution state
-        │  HTTP API  +  WebSocket (live) │
+        │  HTTP API  +  WebSocket (live) │   one per instance
         └────────────────┬───────────────┘
                          ▼
         ┌────────────────────────────────┐
@@ -128,9 +126,12 @@ The goal is to be able to execute workflows with this type of complexity later o
                        ▼
                    Binance API ◄── Broker owns market state
 
-    (all engine activity → LOGGING → logs/app + logs/trades)
+    (all engine activity → LOGGING → instance's logs/app + logs/workflows + logs/trades)
 
 The only two sources of truth are the server for the execution state and the broker for the market state. Everything else is a client or a service. Nothing else owns state.
+
+Each instance is a complete copy of this picture, with its own server, its own database and its own logs. Instances never talk to each other except to read each other's `runtime.json` for a warning (§ Running the same workflow twice).
+Each instance is independant form the other instance.
 
 ## Execution model & nodes
 
@@ -159,6 +160,8 @@ The deepest layer is the engine layer, this layer execute the nodes in a trigger
     │ Engine    │
     └───────────┘
 
+There is one WorkflowManager per instance. It is not a fourth layer above instances: instances do not share a manager, and nothing coordinates them.
+
 #### The engine loop
 
     async def run_engine_pass(self, graph):
@@ -180,6 +183,8 @@ The deepest layer is the engine layer, this layer execute the nodes in a trigger
 Some node just have side effect instead of returning a something. However these nodes will looks the same shape. The order node has a side effect (calling the broker) instead of returning a number.
 The "typed" part matters for the GUI: if an output port is type Number and an input port is type Candles, React Flow refuses to let you connect them. The types prevent nonsense wiring before it ever runs.
 Some node need memory, each node that need memory save its internal state to SQLite, that's the self.prev_*.
+
+Node state belongs to a run, not to a workflow file. Two runs of the same workflow start with fresh node instances: `prev_a = None`, and a node that needs history needs its warm-up again. This is correct — they are separate runs — but it means two copies of the same workflow do not agree until both are warm.
 
 #### The base interface, in plain Python
 
@@ -230,15 +235,12 @@ Example of node with memory :
 
 Essential nodes needed to build a SMA crossover strategy.
 
-1. Candle Data Source — fetches OHLCV candles from Binance for a
-chosen symbol and timeframe
+1. Candle Data Source — fetches OHLCV candles from Binance for a chosen symbol and timeframe
 2. SMA — Simple Moving Average
 3. EMA — Exponential Moving Average
 4. RSI — Relative Strength Index
-5. Comparison — outputs true/false based on >, <, =, ≠, or crossover
-between two inputs
-6. Logic — AND, OR, NOT on boolean inputs (combine multiple
-conditions)
+5. Comparison — outputs true/false based on >, <, =, ≠, or crossover between two inputs
+6. Logic — AND, OR, NOT on boolean inputs (combine multiple conditions)
 7. Time Interval Scheduler — runs the workflow every N seconds
 8. Order Placement — sends a market or limit order to Binance
 9. Chart Output — displays a signal over time in the node in the GUI
@@ -387,8 +389,29 @@ The WorkflowRunner is a state machine
 - COMPLETED — the workflow's scheduler(s) have no future fires (once-only times exhausted; permanently-closed gate)
 - ERRORED — something threw; treated like STOPPING but flagged for the user
 
-The WorkflowManager tracks every WorkflowRunner's state. That collection of states is what status returns and what the Running Workflows panel renders.
+The WorkflowManager tracks every WorkflowRunner's state. That collection of states is what status returns and what the Running Workflows panel renders. Both are scoped to one instance.
+
 Unlike STOPPED, completion cancels nothing: resting orders remain at the broker, positions untouched, the runner is released. Stop = abort and make safe (cancel open orders); Complete = natural end of triggering (leave market state as-is). Transition RUNNING → COMPLETED. Not reachable in the MVP (the Interval Scheduler never completes); state reserved and designed now. Orphaned resting orders after completion are owned by the broker and covered by reconciliation.
+
+### Runs, run names and run ids
+
+A run is one activation of a workflow by a runner. It carries two identifiers, for two different readers.
+
+- The run name is the ergonomic handle, used by the CLI and the GUI. It is the workflow file's name by default.
+- The run id is 8 hex characters, generated at run start, written into every log line and stored in SQLite with the runner state.
+
+Names are for humans and get recycled; ids are for the audit trail and never do. Recovery uses the id to tie recovered orders back to the run that placed them. `grep run=a3f9c1d0 logs/trades/` returns exactly one run's orders, forever.
+
+### Running the same workflow twice
+
+A workflow file is never locked. The user is free to run the same workflow on several instances at once, or several times inside one instance — for example one copy in production and a second copy on testnet to modify and compare. This is a feature, not an accident.
+
+Two safeguards, both cheap, neither of them a lock:
+
+- Warning across instances. On run, ForgeTick reads the other instances' `runtime.json` in the same data directory, asks each live one `GET /api/v1/workflows/running`, and warns if the same workflow file is already running somewhere. Asking beats reading a file: a dead instance's `runtime.json` still claims it is running, a dead port answers nothing.
+- Auto-rename inside an instance. Run names must be unique within an instance, because `stop` targets a name and SQLite keys node state by it. A second run of `sma-cross` becomes `sma-cross-2`, then `-3`, skipping names already taken. Nothing on disk is copied or renamed — both runs load the same untouched JSON.
+
+The assigned name is always echoed back: the CLI prints it, the GUI shows a popup at the moment of renaming. Otherwise the user's next `stop sma-cross` would kill the wrong run.
 
 ### Graceful stop
 
@@ -402,7 +425,7 @@ Stop on the three time scales :
 
 ### Kill switch
 
-The kill switch is graceful-stop applied to every runner at once.
+The kill switch is graceful-stop applied to every runner at once, inside one instance. It does not reach other instances — that is the point of instance isolation. Killing everything on the machine means killing each instance.
 
 ### Two sources of truth
 
@@ -422,8 +445,10 @@ The validation of domain rules are on the editor level
 
 ### The full control-flow path
 
-    CLI:  forgetick stop sma-cross
-    → POST /workflows/sma-cross/stop
+    CLI:  forgetick stop sma-cross prod-crypto
+    → resolve "prod-crypto" → read instances/prod-crypto/runtime.json → port 18181
+    → GET /api/v1/instance → server answers name=prod-crypto → identity confirmed
+    → POST /api/v1/workflows/sma-cross/stop
         → WorkflowManager.stop("sma-cross")
             → runner.stop_requested = True
             → (finishes current node) → cancels its open orders → STOPPED
@@ -440,7 +465,23 @@ To be able to easily share workflows, the definition of workflows are save in a 
 
 ### SQLite
 
-SQLite save the states of running workflows. SQLite is the database where the running states are saved.
+SQLite save the states of running workflows. SQLite is the database where the running states are saved. One database per instance, at `instances/<name>/runtime.db`.
+
+### Recovery is per-instance and local
+
+There is no global recovery pass and nothing coordinates instances. Each instance owns its own `runtime.db` and its own logs, so starting an instance *is* recovery: it opens its own folder, decides whether the last shutdown was clean, and reconciles only its own orders against the broker. Three instances dying together is three independent recoveries.
+
+This is why recovery needs no flag and no special launch mode. `forgetick start prod-crypto` is the whole command, whether the last exit was clean or a crash.
+
+### Detecting an unclean shutdown
+
+A clean shutdown writes a shutdown line to applogs as its last act. The absence of that line at the end of the previous session is the unclean-shutdown detector. No heartbeat, no PID liveness check.
+
+### Measuring the downtime
+
+Downtime is `now − timestamp of the last log line`. No separate mechanism is needed: the logs already record when the instance was last alive.
+
+The buffering policy (§ Logging) means the last line on disk can be slightly older than the real moment of death, since SIGKILL and power loss discard the buffer. This error is in the safe direction — downtime is overestimated, so the decision leans toward stopping. To bound it, workflowlogs flush at `engine_run_end`. The staleness is then at most one scheduler period, which is exactly the resolution the resume decision needs: a 1h-timeframe workflow tolerates a coarse answer, a 1min one gets a fine one, automatically.
 
 ### Shutdown
 
@@ -475,7 +516,7 @@ In both case the app need to always reconcile market state against the broker. T
      │   BrokerAdapter     │   ◄── abstract: defines WHAT operations exist
      │   (interface)       │
      └─────────┬───────────┘
-               │ 
+               │
                ▼
      ┌─────────────────────┐
      │   BinanceAdapter    │   ◄── concrete: defines HOW, using CCXT
@@ -510,16 +551,43 @@ The broker owns market state. The broker layer is how reconciliation happens. On
 
 ### Credentials
 
-The uer's API Keys live in a local configuration file on the user's own machine, read by the adapter at startup. They are never transmitted to ForgeTick and never logged. This is the local-first property. The user's own machine talks directly to the user's own broker account.
+The user's API keys live in one file at the root of the data directory, `credentials.toml`, read by the adapter at startup. They are never transmitted to ForgeTick and never logged. This is the local-first property. The user's own machine talks directly to the user's own broker account. The file is `chmod 600`.
+
+Keys are organised as named profiles:
+
+    # credentials.toml
+    [binance-live]
+    exchange   = "binance"
+    api_key    = "AK..."
+    api_secret = "..."
+
+    [binance-paper]
+    exchange   = "binance"
+    api_key    = "TK..."
+    api_secret = "..."
+    testnet    = true
+
+An instance stores only the profile name, never the keys:
+
+    # instances/paper-etf/instance.toml
+    credentials = "binance-paper"
+
+Two properties follow. Key rotation touches exactly one file, whatever the number of instances. And an instance pointed at `binance-paper` has no path to live credentials at all — "this instance physically cannot touch real money" becomes expressible, which a single shared config could never say.
+
+A profile, not a broker, is what the default-broker model actually selects: a user can hold two accounts at the same exchange, which "default broker" cannot express and "default profile" can.
 
 ### Default Broker
 
-To determine which broker is used for transactions in a workflow, a three-level default broker model is needed.
-The three-level default broker model :
+To determine which broker is used for transactions in a workflow, a four-level default broker model is needed. Each level defaults to the level above and can override it.
 
-- Connection settings level — the global default broker
-- Workflow level — can override the global default for this particular workflow
-- Order node level — a dropdown that defaults to a default-broker option, which resolves to "whatever the workflow says," but can be pinned to a specific broker when needed.
+- Global level — the data directory's default profile, in `forgetick.toml`
+- Instance level — overrides the global default for this instance, in `instance.toml`
+- Workflow level — overrides the instance default for this workflow, in the workflow JSON
+- Order node level — a dropdown that defaults to a default-broker option, which resolves to "whatever the workflow says," but can be pinned to a specific profile when needed. In the workflow JSON.
+
+The instance level is the one that carries the safety property: a whole instance can be pinned to a paper profile, and no workflow inside it can reach live keys unless it names one explicitly.
+
+### Custom brokers (V2)
 
 ## API surface
 
@@ -773,7 +841,7 @@ Users data lives in a data directory and is never inside the package. The repo i
 ### Location/Openning/Creation data directory
 
 ForgeTick can installed via pip, via a cloned repo, or via a portable version (in the future). The data directoy's location depend of the installation mode used. When ForgeTick is launch the option --data-dir "path" can be used to select a specific data directory. ForgeTick keep a file in his repo with the path of the last opened/used data directory. This file must be in the .gitignore.
-The data directory folder is named "ForgeTick_Data_Directory_XXX". The three XX at the end is enable the posibility to have multiple data directory in the same folder, the three XXX represents numbers ranging form 000 to 999.
+The data directory folder is named "ForgeTick_Data_Directory".
 
 The comportement of ForgeTick about the data directoy when it's launching :
 ForgeTick follow precise step if the step fail ForgeTick jump to the next step. If the step is a sucess and ForgeTick find a data directory, ForgeTick stop at this step and open with this data directory.
@@ -801,35 +869,38 @@ If two or multiple data directory folder are next to each other in the same fold
 
 ### Structure data directory
 
-    ForgeTick_Data_Directory_00/
-    ├── config
-    │   ├── config_user_1.toml              host/port, default broker, broker API keys (local only, never logged)
-    │   ├── config_user_2.toml              host/port, default broker, broker API keys (local only, never logged)
-    │   ├── config_user_3.toml              host/port, default broker, broker API keys (local only, never logged)
-    │   ...
-    ├── database
-    │   ├── forgetick_user_1_instance_1.db  SQLite runtime state (§ Persistence & recovery)
-    │   ├── forgetick_user_1_instance_2.db  SQLite runtime state (§ Persistence & recovery)
-    │   ├── forgetick_user_2_instance_1.db  SQLite runtime state (§ Persistence & recovery)
-    │   ├── forgetick_user_3_instance_1.db  SQLite runtime state (§ Persistence & recovery)
-    │   ├── forgetick_user_3_instance_2.db  SQLite runtime state (§ Persistence & recovery)
-    │   ├── forgetick_user_3_instance_3.db  SQLite runtime state (§ Persistence & recovery)
-    │   ...   
-    ├── workflows/                          the user's workflow JSONs
-    ├── custom_nodes/                       the user's custom nodes (V2 — scanned by the registry)
-    ├── custom_brokers/                     the user's custom brokers (V2)
-    └── logs/
-        ├── user_1
-        │   └── app/   workflows/   trades/     one folder per stream, daily files (§ Logging)
-        ├── user_2
-        │   └── app/   workflows/   trades/     one folder per stream, daily files (§ Logging)
-        ├── user_3
-        │   └── app/   workflows/   trades/     one folder per stream, daily files (§ Logging)
-        ...
+    ForgeTick_Data_Directory/
+    ├── forgetick.toml
+    ├── credentials.toml
+    ├── workflows/  
+    ├── custom_nodes/  
+    ├── custom_brokers/
+    └── instances/
+        └── prod-crypto/
+            ├── instance.toml
+            ├── runtime.db
+            ├── runtime.json
+            └── logs/ app/ workflows/ trades/
 
-This directory is the users's property: their strategies, their keys, their audit trail. The data directory is outside ForgeTick repo, so a cloned repo can never accidentally commit API keys. A user who wants his workflows under version control puts ForgeTick_Data_Directory_00/workflows/ in his own git repository — cleanly separated from ForgeTick's code.
+forgetick.toml at the root as a marker (validates --data-dir), not a version stamp. No data-dir versioning: new releases create what's missing, never delete what's obsolete.
 
+This directory is the users's property: their strategies, their keys, their audit trail. The data directory is outside ForgeTick repo, so a cloned repo can never accidentally commit API keys. A user who wants his workflows under version control puts ForgeTick_Data_Directory/workflows/ in his own git repository — cleanly separated from ForgeTick's code.
 
+### Credential
+
+credentials.toml at the root, chmod 600 — named profiles, referenced by name from instances. Key rotation touches one file.
+
+    # credentials.toml  (chmod 600, data dir root)
+    [binance-live]
+    exchange = "binance"
+    api_key  = "AK..."
+    api_secret = "..."
+
+    [binance-paper]
+    exchange = "binance"
+    api_key  = "TK..."
+    api_secret = "..."
+    testnet  = true
 
 
 

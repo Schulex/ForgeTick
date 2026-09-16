@@ -22,6 +22,7 @@ This app, called ForgeTick, sits between the user and the broker's API. The user
 - Installation — One copy of the ForgeTick code (pip install, cloned repo, or portable). One installation can launch many instances.
 - Run — One activation of a workflow by a runner. Has a name (auto-renamed on collision) and a run id.
 - Credential profile — A named block of broker API keys, stored once at the data directory root and referenced by name.
+- Torn run — An engine run cut mid-graph by a crash, leaving some nodes advanced and others not.
 
 ## Future-proofing decisions
 
@@ -110,7 +111,7 @@ The goal is to be able to execute workflows with this type of complexity later o
         ┌────────────────────────────────┐
         │        BACKEND SERVER          │  ◄── Server owns
         │           (FastAPI)            │    execution state
-        │  HTTP API  +  WebSocket (live) │   one per instance
+        │  HTTP API  +  WebSocket (live) │      one per instance
         └────────────────┬───────────────┘
                          ▼
         ┌────────────────────────────────┐
@@ -160,7 +161,7 @@ The deepest layer is the engine layer, this layer execute the nodes in a trigger
     │ Engine    │
     └───────────┘
 
-There is one WorkflowManager per instance. It is not a fourth layer above instances: instances do not share a manager, and nothing coordinates them.
+There is one WorkflowManager per instance. Instances share nothing and nothing coordinates them.
 
 #### The engine loop
 
@@ -184,7 +185,7 @@ Some node just have side effect instead of returning a something. However these 
 The "typed" part matters for the GUI: if an output port is type Number and an input port is type Candles, React Flow refuses to let you connect them. The types prevent nonsense wiring before it ever runs.
 Some node need memory, each node that need memory save its internal state to SQLite, that's the self.prev_*.
 
-Node state belongs to a run, not to a workflow file. Two runs of the same workflow start with fresh node instances: `prev_a = None`, and a node that needs history needs its warm-up again. This is correct — they are separate runs — but it means two copies of the same workflow do not agree until both are warm.
+Node state belongs to a run, not to a workflow file. Two runs of the same workflow start with fresh node instances and a node that needs history needs its warm-up again. This is correct, they are separate runs, but it means two copies of the same workflow do not agree until both are warm.
 
 #### The base interface, in plain Python
 
@@ -589,6 +590,10 @@ The instance level is the one that carries the safety property: a whole instance
 
 ### Custom brokers (V2)
 
+Custom brokers are the same extension point as custom nodes : 
+
+Custom brokers are the same extension point as custom nodes — a folder scanned at startup, a class implementing BrokerAdapter, registered by name. Technically it is nearly free, because the abstract interface already exists.
+
 ## API surface
 
 ### Purpose
@@ -834,38 +839,55 @@ pyproject.toml declares one console command: forgetick. forgetick start starts t
 
 Test priority mirrors risk: the engine and recovery are where trust lives. The GUI is tested by clicking (MVP scope).
 
-## Data strucutre
+## Data structure
 
-Users data lives in a data directory and is never inside the package. The repo is ForgeTick's territory; the data directory is the users's
+User data lives in a data directory and is never inside the package. The repo is ForgeTick's territory; the data directory is the user's.
 
-### Location/Openning/Creation data directory
+### One axis: shared or per-instance
 
-ForgeTick can installed via pip, via a cloned repo, or via a portable version (in the future). The data directoy's location depend of the installation mode used. When ForgeTick is launch the option --data-dir "path" can be used to select a specific data directory. ForgeTick keep a file in his repo with the path of the last opened/used data directory. This file must be in the .gitignore.
-The data directory folder is named "ForgeTick_Data_Directory".
+There is no user axis (§ Per-instance, not multi-user). Everything is either shared by the whole data directory or owned by one instance:
 
-The comportement of ForgeTick about the data directoy when it's launching :
-ForgeTick follow precise step if the step fail ForgeTick jump to the next step. If the step is a sucess and ForgeTick find a data directory, ForgeTick stop at this step and open with this data directory.
+- **Shared** — workflows, credentials, custom nodes, custom brokers, global settings. The user's library.
+- **Per-instance** — settings, database, runtime file, logs. One running server's private state.
+
+### Location / opening / creation of the data directory
+
+ForgeTick can be installed via pip, via a cloned repo, or via a portable version (in the future). The data directory's location depends on the installation mode used. When ForgeTick is launched the option `--data-dir "path"` can be used to select a specific data directory. ForgeTick keeps a file in its repo with the path of the last opened/used data directory. This file must be in the .gitignore.
+
+The data directory folder is named `ForgeTick_Data_Directory`. A user who wants several data directories puts each one in its own folder : there is no numbered suffix and no rule for choosing between several. This removes an arbitrary choice that could otherwise silently open someone's live directory instead of their paper one.
+
+ForgeTick follosw precise steps, if a step fails it jumps to the next. If a step succeeds and ForgeTick finds a data directory, it stop at this step and opens with this data directory.
 
 Launching ForgeTick when it is installed via pip :
-1/ ForgeTick check for --data-dir
-2/ ForgeTick check for the last data directory
-3/ ForgeTick use platformdirs
-4/ ForgeTick create a new data directory using platformdirs
+1/ ForgeTick checks for `--data-dir`
+2/ ForgeTick checks for the last data directory
+3/ ForgeTick uses platformdirs
+4/ ForgeTick creates a new data directory using platformdirs
 
-platformdirs is used because we have no idea on which OS ForgeTick is on. With platformdirs the data directory alwayys find itself at the same place.
+platformdirs is used because we have no idea which OS ForgeTick is on. With platformdirs the data directory always finds itself at the same place. It is also what gives separate OS accounts separate data directories, for free.
 
 Launching ForgeTick when it is installed via a cloned repo, or via a portable version (in the future) :
-1/ ForgeTick check for --data-dir
-2/ ForgeTick check for the last data directory
-3/ ForgeTick check if there is a data directory next to the repo folder
-4/ ForgeTick create a new data directory next to the repo folder
+1/ ForgeTick checks for `--data-dir`
+2/ ForgeTick checks for the last data directory
+3/ ForgeTick checks if there is a data directory next to the repo folder
+4/ ForgeTick creates a new data directory next to the repo folder
 
 Example for points 3 and 4 of installation via cloned repo or via portable version :
-    Random_Folder
-    ├── ForgeTick                           ForgeTick Repo Folder
-    ├── ForgeTick_Data_Directory_000        ForgeTick Data directory Folder
 
-If two or multiple data directory folder are next to each other in the same folder. ForgeTick give the priority to the one with the smallest number and open this one.
+    Random_Folder
+    ├── ForgeTick                       ForgeTick Repo Folder
+    ├── ForgeTick_Data_Directory        ForgeTick Data directory Folder
+
+A path given by `--data-dir` is verified by the presence of `forgetick.toml` at its root, not by the folder's name. A path without it is either created as a fresh data directory or refused, never silently used.
+
+### Versioning: none
+
+The data directory carries no version number. Compatibility rests on two rules:
+
+- A newer ForgeTick opening an older data directory creates whatever is missing, as it would in a fresh one.
+- A newer ForgeTick never deletes what became obsolete, so an older ForgeTick can still open it.
+
+This gives compatibility in both directions without a stamp to maintain, and decouples the data directory from ForgeTick's release number. Should a breaking change ever become unavoidable, a version field can be added then, its absence read as version 1.
 
 ### Structure data directory
 

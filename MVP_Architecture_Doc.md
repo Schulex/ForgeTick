@@ -590,7 +590,7 @@ The instance level is the one that carries the safety property: a whole instance
 
 ### Custom brokers (V2)
 
-Custom brokers are the same extension point as custom nodes : 
+Custom brokers are the same extension point as custom nodes :
 
 Custom brokers are the same extension point as custom nodes — a folder scanned at startup, a class implementing BrokerAdapter, registered by name. Technically it is nearly free, because the abstract interface already exists.
 
@@ -706,54 +706,63 @@ Logging answers three different questions, for three different readers. ForgeTic
 - workflowlogs — workflow execution events: engine runs, node executions, state transitions, scheduler fires. The "what is my strategy doing" stream.
 - applogs — application events: server lifecycle, configuration, API activity, errors of the software itself. The "is the software healthy" stream.
 
+All three live inside the instance's own folder. Two instances never append to the same file; streams are merged at read time, not at write time.
+
 ### Event routing rule
 
 Every event has exactly one home, classified by subject, not severity. A node crash is a workflow event (workflowlogs, level ERROR). A failed order placement is a trade event (tradelogs). A port-binding failure is an app event (applogs). The same event is never written to two streams.
 
 ### Line format
 
-One event per line, fixed field order, human-readable and grep/parse-friendly (key=value for structured fields):
+One event per line, fixed field order, human-readable and grep/parse-friendly (key=value for structured fields). Every workflow and trade line carries both the run name and the run id:
 
-    logs/trades/2026-06-10.log:
-    2026-06-10T14:23:05.123Z INFO workflow=sma-cross node=order-1 event=order_placed side=buy amount=0.01 symbol=BTC/USDT type=market order_id=8837123 status=filled price=42150.30
+    instances/prod-crypto/logs/trades/2026-06-10.log:
+    2026-06-10T14:23:05.123Z INFO workflow=sma-cross run=a3f9c1d0 node=order-1 event=order_placed side=buy amount=0.01 symbol=BTC/USDT type=market order_id=8837123 status=filled price=42150.30
 
-    logs/workflows/2026-06-10.log:
-    2026-06-10T14:23:05.081Z INFO workflow=sma-cross event=engine_run_start trigger=scheduler
-    2026-06-10T14:23:05.119Z INFO workflow=sma-cross node=sma-fast event=node_executed duration_ms=2
-    2026-06-10T14:23:05.124Z INFO workflow=sma-cross event=engine_run_end result=completed duration_ms=43
+    instances/prod-crypto/logs/workflows/2026-06-10.log:
+    2026-06-10T14:23:05.081Z INFO workflow=sma-cross run=a3f9c1d0 event=engine_run_start trigger=scheduler
+    2026-06-10T14:23:05.119Z INFO workflow=sma-cross run=a3f9c1d0 node=sma-fast event=node_executed duration_ms=2
+    2026-06-10T14:23:05.124Z INFO workflow=sma-cross run=a3f9c1d0 event=engine_run_end result=completed duration_ms=43
 
-    logs/app/2026-06-10.log:
-    2026-06-10T14:20:11.002Z INFO component=server event=startup version=0.1.0 host=127.0.0.1 port=18181
+    instances/prod-crypto/logs/app/2026-06-10.log:
+    2026-06-10T14:20:11.002Z INFO component=server event=startup version=0.1.0 instance=prod-crypto host=127.0.0.1 port=18181
     2026-06-10T14:20:11.480Z ERROR component=broker event=connection_failed broker=binance error="timeout after 10s"
+    2026-06-10T14:25:44.310Z INFO component=server event=instance_healthy
+    2026-06-10T18:02:19.774Z INFO component=server event=shutdown reason=stop_command
 
 Timestamps are ISO 8601 with milliseconds, UTC. Levels: INFO / WARN / ERROR.
 
+Two applog events carry meaning beyond their text:
+
+- `event=shutdown` is written as the last act of a clean exit. Its absence is how the next startup detects a crash (§ Recovery model).
+- `event=instance_healthy` is written when every active scheduler has completed two engine runs. The launcher watches for it to reset its crash counter (§ Auto-restart).
+
 ### Files, rotation, retention
 
-- One folder per stream: logs/trades/, logs/workflows/, logs/app/. One file per day, named by date.
+- One folder per stream, inside the instance: `instances/<name>/logs/trades/`, `.../workflows/`, `.../app/`. One file per day, named by date.
 - Retention (MVP): applogs and workflowlogs are deleted after two weeks. tradelogs are never auto-deleted — trade history is tiny (bytes per trade) and is the user's audit trail.
-- The CLI commands applogs, workflowlogs, tradelogs each stream their file live (equivalent of tail -f), Ctrl-C to exit. Because streams are plain files, every Unix tool (tail, grep, awk) works on them directly — the CLI commands are a convenience, not a gatekeeper.
+- The CLI commands applogs, workflowlogs, tradelogs each stream that instance's file live (equivalent of tail -f), Ctrl-C to exit. Because streams are plain files, every Unix tool (tail, grep, awk) works on them directly — the CLI commands are a convenience, not a gatekeeper.
 - The launch terminal streams a merged live view of all three, each line prefixed for filtering:
 
-    [APP]   2026-06-10T14:20:11.002Z INFO component=server event=startup version=0.1.0 host=127.0.0.1 port=18181
-    [WORKFLOW]  2026-06-10T14:23:05.081Z INFO workflow=sma-cross event=engine_run_start trigger=scheduler
-    [TRADE] 2026-06-10T14:23:05.123Z INFO workflow=sma-cross node=order-1 event=order_placed side=buy amount=0.01 symbol=BTC/USDT type=market order_id=8837123 status=filled price=42150.30
+    [APP]   2026-06-10T14:20:11.002Z INFO component=server event=startup version=0.1.0 instance=prod-crypto host=127.0.0.1 port=18181
+    [WORKFLOW]  2026-06-10T14:23:05.081Z INFO workflow=sma-cross run=a3f9c1d0 event=engine_run_start trigger=scheduler
+    [TRADE] 2026-06-10T14:23:05.123Z INFO workflow=sma-cross run=a3f9c1d0 node=order-1 event=order_placed side=buy amount=0.01 symbol=BTC/USDT type=market order_id=8837123 status=filled price=42150.30
 
 ### Durability policy (per stream)
 
 Buffering follows each stream's tolerance for losing its final moments in a crash:
 
 - tradelogs: flushed to disk immediately, per event. If the process dies right after an order, the line must already be on disk. Volume is tiny; immediate flushing is free.
-- workflowlogs: default buffering, any ERROR record immediately flushes the entire workflowlogs's buffer and applogs's buffer (context lines + error).
-- applogs: default buffering, any ERROR record immediately flushes the entire workflowlogs's buffer and applogs's buffer (context lines + error).
+- workflowlogs: default buffering, plus a flush at every `engine_run_end`, plus any ERROR record immediately flushes the entire workflowlogs's buffer and applogs's buffer (context lines + error).      The `engine_run_end` flush is what bounds the downtime measurement to one scheduler period (§ Measuring the downtime).
+- applogs: default buffering, plus an immediate flush of the `shutdown` line, plus any ERROR record immediately flushes the entire workflowlogs's buffer and applogs's buffer (context lines + error).
 
 Residual loss window applies only to deaths the process cannot detect (power loss, SIGKILL), where no error record exists to trigger on.
 
 ### Logs MVP scope
 
-- Three streams, daily files, the merged prefixed launch-terminal view, three CLI streaming commands.
+- Three streams per instance, daily files, the merged prefixed launch-terminal view, three CLI streaming commands.
 - Two-week purge for app/workflow logs; NO purge for tradelogs.
-- Standard Python logging with default buffering per the policy above; no custom buffer machinery.
+- Standard Python logging with default buffering per the policy above, plus the Error immediate flushes, plus the three explicit flush points (trade events, `engine_run_end`, `shutdown`)
 
 ### Logging Future-proofing
 
@@ -764,7 +773,7 @@ Residual loss window applies only to deaths the process cannot detect (power los
 
 ## Repo structure
 
-The repository contains code. User data — workflows, API keys, database, logs — is in a separate data directory and is never inside the package. The repo is ForgeTick's territory; the data directory is the user's.
+The repository contains code. User data — workflows, API keys, databases, logs — is in a separate data directory and is never inside the package. The repo is ForgeTick's territory; the data directory is the user's.
 
 ### Top level
 
@@ -774,7 +783,7 @@ The repository contains code. User data — workflows, API keys, database, logs 
     ├── README.md                       install, quickstart, disclaimer banner
     ├── ARCHITECTURE.md                 this document
     ├── pyproject.toml                  package definition, dependencies, CLI entry point
-    ├── .gitignore                      excludes data directories, builds, caches
+    ├── .gitignore                      excludes data directories, the last-data-dir file, builds, caches
     ├── src/forgetick/                  the Python package (backend + CLI)
     ├── frontend/                       React/Vite/TypeScript app (GUI source)
     ├── examples/                       example workflows (technical demos, e.g. sma_crossover.json)
@@ -787,6 +796,8 @@ LICENSE, DISCLAIMER, README and ARCHITECTURE sit at the root deliberately: they 
     src/forgetick/
     ├── __init__.py                     version
     ├── __main__.py                     python -m forgetick → starts the server
+    ├── datadir.py                      data directory discovery/creation, instance folders (§ Data structure)
+    ├── launcher.py                     supervises one instance, restarts on crash (§ Auto-restart)
     ├── server/
     │   ├── app.py                      FastAPI init, WebSocket hub, static-files mount
     │   ├── routes_v1.py                the /api/v1/ endpoints (§ API surface)
@@ -802,14 +813,15 @@ LICENSE, DISCLAIMER, README and ARCHITECTURE sit at the root deliberately: they 
     │   └── logic.py  scheduler.py  order.py  chart_output.py      (the 9 MVP nodes)
     ├── broker/
     │   ├── adapter.py                  abstract BrokerAdapter (§ Broker layer)
-    │   └── binance.py                  BinanceAdapter wrapping CCXT
+    │   ├── binance.py                  BinanceAdapter wrapping CCXT
+    │   └── credentials.py              credential profile loading + resolution (§ Credentials)
     ├── persistence/
     │   ├── db.py                       SQLite + SQLAlchemy setup
     │   ├── models.py                   runtime-state tables
     │   └── recovery.py                 clean/unclean detection, broker reconciliation (§ Persistence & recovery)
     ├── logstreams.py                   three-stream logging + merged launch-terminal view (§ Logging)
     └── cli/
-        └── main.py                     the 9 client commands + serve
+        └── main.py                     the 9 client commands + start
 
 The src/ layout is the modern Python packaging standard: tests run against the installed package rather than whatever sits in the working directory, catching packaging mistakes early. Folder names mirror this document's sections, so the doc maps one-to-one onto the code. The scheduler node class lives in nodes/ (registered and visible in the editor like any node); the timing machinery that acts on its config lives in the runner — the same split as everywhere in the architecture: nodes declare, the execution layer acts.
 
@@ -818,16 +830,18 @@ The src/ layout is the modern Python packaging standard: tests run against the i
     frontend/
     ├── package.json   vite.config.ts   tsconfig.json   index.html
     └── src/
-        ├── App.tsx                     layout: top bar, side bar, node editor (§ GUI Layout, MVP Spec)
+        ├── App.tsx                     layout: top bar (instance name), side bar, node editor
         ├── editor/                     React Flow canvas, node rendering, port typing
         ├── panels/                     Running Workflows, Node Library, Example Workflows, Settings
         └── api/                        typed client for /api/v1 + the WebSocket subscription
 
-Development mode: the Vite dev server (hot reload) proxies API calls to the backend on 18181. Shipping mode: the frontend is built to static files, bundled inside the Python package (server/static/), and served by FastAPI itself. Users installing with pip never need Node.js — only contributors working on the GUI do. This keeps the "install in under 10 minutes" success criterion honest.
+Development mode: the Vite dev server (hot reload) proxies API calls to the backend. Shipping mode: the frontend is built to static files, bundled inside the Python package (server/static/), and served by FastAPI itself. Users installing with pip never need Node.js — only contributors working on the GUI do. This keeps the "install in under 10 minutes" success criterion honest.
+
+The top bar always displays the instance name, taken from `GET /api/v1/instance`. With several instances open in several tabs, this is what stops a paper tab from being mistaken for a live one.
 
 ### Entry points
 
-pyproject.toml declares one console command: forgetick. forgetick start starts the server in the foreground — its terminal is the merged-log launch terminal (§ Logging); python -m forgetick is equivalent. The nine client commands (run, stop, kill, status, list, applogs, workflowlogs, tradelogs, help) talk to the running server on port 18181.
+pyproject.toml declares one console command: forgetick. `forgetick start [instance]` starts that instance's server in the foreground — its terminal is the merged-log launch terminal (§ Logging); `python -m forgetick` is equivalent. The nine client commands (run, stop, kill, status, list, applogs, workflowlogs, tradelogs, help) resolve the target instance through its `runtime.json` and talk to the running server.
 
 ### Tests
 
@@ -835,9 +849,10 @@ pyproject.toml declares one console command: forgetick. forgetick start starts t
     ├── test_engine.py                  topological order, stop-between-nodes, timeouts
     ├── test_nodes.py                   each node's execute() against known data
     ├── test_broker.py                  adapter against mocks / Binance testnet
-    └── test_recovery.py                clean/unclean detection, reconciliation
+    ├── test_recovery.py                clean/unclean detection, downtime from logs, reconciliation
+    └── test_datadir.py                 discovery order, instance creation, credential resolution
 
-Test priority mirrors risk: the engine and recovery are where trust lives. The GUI is tested by clicking (MVP scope).
+Test priority mirrors risk: the engine and recovery are where trust lives. Data-directory resolution joins them because a wrong answer there means an instance opening the wrong database or the wrong credentials. The GUI is tested by clicking (MVP scope).
 
 ## Data structure
 
@@ -889,48 +904,46 @@ The data directory carries no version number. Compatibility rests on two rules:
 
 This gives compatibility in both directions without a stamp to maintain, and decouples the data directory from ForgeTick's release number. Should a breaking change ever become unavoidable, a version field can be added then, its absence read as version 1.
 
-### Structure data directory
+### Structure of the data directory
 
     ForgeTick_Data_Directory/
-    ├── forgetick.toml
-    ├── credentials.toml
-    ├── workflows/  
-    ├── custom_nodes/  
-    ├── custom_brokers/
+    ├── forgetick.toml                  marker + global settings (default credential profile, defaults for new instances)
+    ├── credentials.toml                named credential profiles — chmod 600, local only, never logged
+    ├── workflows/                      the user's workflow JSONs — shared by every instance
+    ├── custom_nodes/                   the user's custom nodes (V2 — scanned by the registry)
+    ├── custom_brokers/                 the user's custom brokers (V2 — § Custom brokers)
     └── instances/
-        └── prod-crypto/
-            ├── instance.toml
-            ├── runtime.db
-            ├── runtime.json
-            └── logs/ app/ workflows/ trades/
+        ├── prod-crypto/
+        │   ├── instance.toml           host, credential profile, on_unclean_restart, max_missed_fires, LAN exposure
+        │   ├── runtime.db              SQLite runtime state (§ Persistence & recovery)
+        │   ├── runtime.json            actual port + PID, written by the server at startup
+        │   ├── launcher.json           exit_at + exit code, written by the launcher (§ Auto-restart)
+        │   └── logs/
+        │       └── app/  workflows/  trades/     one folder per stream, daily files (§ Logging)
+        ├── paper-etf/
+        │   └── ...
+        └── experiments/
+            └── ...
 
-forgetick.toml at the root as a marker (validates --data-dir), not a version stamp. No data-dir versioning: new releases create what's missing, never delete what's obsolete.
+This directory is the user's property: their strategies, their keys, their audit trail. The data directory is outside the ForgeTick repo, so a cloned repo can never accidentally commit API keys. A user who wants his workflows under version control puts `ForgeTick_Data_Directory/workflows/` in his own git repository, cleanly separated from ForgeTick's code, and separate from instance state, which is machine-specific and should not be committed.
 
-This directory is the users's property: their strategies, their keys, their audit trail. The data directory is outside ForgeTick repo, so a cloned repo can never accidentally commit API keys. A user who wants his workflows under version control puts ForgeTick_Data_Directory/workflows/ in his own git repository — cleanly separated from ForgeTick's code.
+### Where settings live
 
-### Credential
+Three storage levels, matching the scope of what they configure:
 
-credentials.toml at the root, chmod 600 — named profiles, referenced by name from instances. Key rotation touches one file.
+- **Data directory** — `forgetick.toml`: global default credential profile, `max_missed_fires`, defaults applied to new instances. Also the marker identifying a folder as a data directory.
+- **Instance** — `instances/<name>/instance.toml`: host binding, credential profile, `on_unclean_restart`, `max_missed_fires`, LAN exposure. In V2 also the preferred port.
+- **Workflow** — the workflow JSON: the workflow's broker override, each order node's pinned profile, `max_missed_fires` at workflow and trigger-domain level. A shared JSON carries the strategy, never the keys.
 
-    # credentials.toml  (chmod 600, data dir root)
-    [binance-live]
-    exchange = "binance"
-    api_key  = "AK..."
-    api_secret = "..."
+The four-level models (§ Default Broker, § max_missed_fires) map onto these three files: global and instance are one file each, while the workflow and the level below it both live in the JSON.
 
-    [binance-paper]
-    exchange = "binance"
-    api_key  = "TK..."
-    api_secret = "..."
-    testnet  = true
+Credentials sit at the data directory level even though instances select among them, so that rotating a key touches one file.
 
+### Instance folders
 
+An instance folder is created on demand by `forgetick start <name>` and contains everything that instance owns. Deleting an instance is deleting its folder; its workflows survive, having never been inside it.
 
-
-
-
-
-
+`runtime.json` holds the actual port and PID, written at startup, and is what lets a client resolve a name to an address (§ Ports). It is runtime state, rewritten every start, not the user's to edit. `launcher.json` is written by the launcher (§ Persistence & recovery).
 
 
 
@@ -939,11 +952,6 @@ credentials.toml at the root, chmod 600 — named profiles, referenced by name f
 
 
 
-### MVP scope
-
-Monorepo: one repository, one issue tracker, one release tag covering matched backend + frontend.
-The tree above, complete.
-Recommended from day one: a minimal CI (.github/workflows/ci.yml running pytest and a linter on every push) — cheap, and the green checkmark is exactly the "is this project maintained?" signal the target user checks before installing.
 
 ### Future-proofing
 

@@ -573,9 +573,13 @@ An instance stores only the profile name, never the keys:
     # instances/paper-etf/instance.toml
     credentials = "binance-paper"
 
-Two properties follow. Key rotation touches exactly one file, whatever the number of instances. And an instance pointed at `binance-paper` has no path to live credentials at all — "this instance physically cannot touch real money" becomes expressible, which a single shared config could never say.
+Key rotation therefore touches one file whatever the number of instances, and an instance pointed at `binance-paper` has no path to live credentials.
 
-A profile, not a broker, is what the default-broker model actually selects: a user can hold two accounts at the same exchange, which "default broker" cannot express and "default profile" can.
+The default-broker model selects a profile, not a broker: a user may hold two accounts at the same exchange.
+
+(Two properties follow. Key rotation touches exactly one file, whatever the number of instances. And an instance pointed at `binance-paper` has no path to live credentials at all — "this instance physically cannot touch real money" becomes expressible, which a single shared config could never say.
+
+A profile, not a broker, is what the default-broker model actually selects: a user can hold two accounts at the same exchange, which "default broker" cannot express and "default profile" can.)
 
 ### Default Broker
 
@@ -590,9 +594,16 @@ The instance level is the one that carries the safety property: a whole instance
 
 ### Custom brokers (V2)
 
-Custom brokers are the same extension point as custom nodes :
+Same extension point as custom nodes: a folder scanned at startup, a class implementing BrokerAdapter, registered by name.
+Like third-party clients, the BrokerAdapter is versioned (§ Third-party clients).
 
-Custom brokers are the same extension point as custom nodes — a folder scanned at startup, a class implementing BrokerAdapter, registered by name. Technically it is nearly free, because the abstract interface already exists.
+A custom broker receives API credentials and can place orders, so it carries three safeguards custom nodes do not need:
+
+- An explicit confirmation on first load, naming the file and stating that this code will receive broker credentials.
+- `adapter_api_version` declared by the adapter and checked at load; a mismatch is refused rather than half-working.
+- Credentials passed as one resolved profile, never the whole `credentials.toml`.
+
+CCXT already abstracts 100+ exchanges, so the target is non-CCXT brokers such as Interactive Brokers.
 
 ## API surface
 
@@ -628,8 +639,15 @@ GET    /api/v1/workflows/{name}/load   → fetch a workflow's JSON        (GUI: 
 GET    /api/v1/workflows/running       → status of running workflows    (CLI: status, GUI: Running panel)
 GET    /api/v1/workflows/list          → list available workflow files  (CLI: list,   GUI: file browser)
 POST   /api/v1/kill                    → stop all + cancel all orders   (CLI: kill,   GUI: kill switch)
+GET    /api/v1/instance                → {name, version, port}          (all clients, before acting)
 
-applogs and tradelogs are deliberately not endpoints — logs stream from files, not through the API. open/close are not endpoints either — they are GUI-local editor actions ("which workflow is on my canvas"), state the server doesn't track. The endpoint list is exactly the operations that act on server-owned state.
+applogs, workflowlogs and tradelogs are deliberately not endpoints — logs stream from files, not through the API. open/close are not endpoints either — they are GUI-local editor actions ("which workflow is on my canvas"), state the server doesn't track. The endpoint list is exactly the operations that act on server-owned state, plus the one that says who the server is.
+
+### The instance identity endpoint
+
+`GET /api/v1/instance` returns `{name, version, port}`. Clients connect by port, and a port is not an identity: a stale `runtime.json` or a saved bookmark can reach the wrong server.
+
+Every client asks first and compares the name before acting. The CLI refuses on mismatch; the GUI shows the instance name in its top bar.
 
 ### The filesystem principle behind load and save
 
@@ -640,7 +658,7 @@ A browser runs in a security sandbox: it cannot read or write the local filesyst
 
 ### WebSocket: the sync mechanism
 
-    Mathias types `forgetick run sma-cross` in his terminal
+    The user types `forgetick run sma-cross prod-crypto` in his terminal
             │
             ▼
     POST /api/v1/workflows/sma-cross/run     ── HTTP, from the CLI
@@ -649,16 +667,16 @@ A browser runs in a security sandbox: it cannot read or write the local filesyst
     server starts the runner, state → RUNNING
             │
             ▼
-    server broadcasts {workflow: sma-cross, state: RUNNING, ...}
+    server broadcasts {workflow: sma-cross, run: a3f9c1d0, state: RUNNING, ...}
             │
             ├──═══ WebSocket ═══►  Browser GUI: Running panel shows it appear
             └──═══ WebSocket ═══►  any other connected client updates too
 
-Any change to server state is broadcast to every connected client immediately.
+Any change to server state is broadcast to every connected client immediately. Broadcasts stay inside one instance: a client connected to `prod-crypto` never sees `paper-etf`'s events.
 
 The CLI caused the change over HTTP; the GUI learned of it over WebSocket, without polling and without knowing the CLI exists. No client holds state; each renders the server's last broadcast. A client can disconnect and reconnect at any time and get the true picture by re-querying GET /workflows/running and resubscribing — a crashed browser or dropped SSH session loses nothing, because it held nothing.
 
-MVP broadcast payloads: workflow state transitions (IDLE/RUNNING/STOPPING/STOPPED/ERRORED) and per-workflow status (runtime, trade count, P&L), keeping the Running panel and status live.
+MVP broadcast payloads: workflow state transitions (IDLE/RUNNING/STOPPING/STOPPED/COMPLETED/ERRORED) and per-workflow status (run name, run id, runtime, trade count, P&L), keeping the Running panel and status live.
 
 ### Self-documentation
 
@@ -666,37 +684,81 @@ FastAPI auto-generates an interactive OpenAPI (Swagger) specification from the e
 
 ### API MVP scope
 
-- The seven HTTP endpoints above; one WebSocket stream broadcasting state + status to all clients.
+- The eight HTTP endpoints above; one WebSocket stream broadcasting state + status to all clients of that instance.
 - No authentication: single-user local app, the user is whoever is at the machine.
-- Binds to localhost by default on a fixed port; the user may expose it on their LAN at their own choice (the "run on a home server" scenario).
+- Binds to localhost by default; the user may expose it on their LAN at their own choice (the "run on a home server" scenario).
+
+### Per-instance, not multi-user
+
+One user per instance, and as many instances as wanted — NOT one instance serving multiple users. Rationale: (1) crash isolation — one faulty workflow cannot take down others or cost them money; (2) security — broker API keys are never pooled into one shared runtime.
+
+ForgeTick does not model users. The operating system does, with kernel-enforced permissions: separate OS accounts get separate data directories through platformdirs, and `--data-dir` overrides. Per-user files inside one shared folder would be a naming convention, not a boundary.
+
+### Instances
+
+An instance is one running ForgeTick server, with its own name, port, database and logs. It is the isolation unit of the architecture.
+
+- Named, not numbered: `prod-crypto`, `paper-etf`, `experiments`.
+- Unlimited per installation. An instance is a process, not a copy of the code.
+- Multiple installations are supported: cloning a new release into another folder to test it while production keeps running an older version.
+- Created on demand: `forgetick start <name>` creates the instance folder if absent and prints `created new instance '<name>'`, so a typo is visible rather than silent.
+- `forgetick start` with no name uses the instance named `default`, creating it if needed.
+
+### Ports (MVP)
+
+At startup the server scans upward from 18181, takes the first free port, and writes it into `instances/<name>/runtime.json` with its PID. 18181 is memorable and avoids well-known ports.
+
+Ports are not stable across restarts. Identity does not depend on them:
+
+- The CLI resolves a name to a port by reading that instance's `runtime.json`, before any network call.
+- `GET /api/v1/instance` confirms the server's name before the client acts on it.
+
+Deferred to V2: a preferred port in `instance.toml` so an address stays stable for bookmarks and reverse proxies, a WARN when it is taken, `port_strict = true` to refuse to move rather than drift, and possibly binding to port 0. Port reservation across instances is rejected: nothing enforces it.
+
+### Resolving an instance from a client
+
+Name resolution is scoped to a data directory, where `instances/` lives. Two data directories can each hold a `paper-etf` without conflict; the CLI resolves inside whichever data directory it was pointed at. Reaching across data directories means naming the port explicitly.
+
+The launch terminal prints the address on startup:
+
+    prod-crypto → http://127.0.0.1:18181
 
 ### LAN, "home server" scenario
 
-Binds to localhost by default on a fixed port; the user may expose it on their LAN at their own choice. This option can be change in the settings. This is if someone run ForgeTick on a local server / home server. In this case the connection will be from another computer via SSH terminal or via the broswer like usual.
+Binds to localhost by default; the user may expose it on their LAN at their own choice. This option can be changed in the settings. This is if someone runs ForgeTick on a local server / home server. In this case the connection will be from another computer via SSH terminal or via the browser like usual.
 
-### Per-user instance
+### LAN exposure
 
-One user per-instance and multi instances, NOT one instance with multiple user ! Rationale: (1) crash isolation — one user's faulty workflow cannot take down others or cost them money; (2) security — broker API keys are never pooled into one database, avoiding a catastrophic single honeypot. Per-instance keep the security model sound.
+Lan exposure on the network, by default the server is only on the machine — 127.0.0.1. An option in the instance settings can expose the server to all network — 0.0.0.0. The instance needs to restart to enable this option. When this setting is changed from 127.0.0.1 to 0.0.0.0, a warning should pop at the screen and another warning needs to be next to the option. When ForgeTick starts in exposed mode, it should print a warning line in the launch terminal ("⚠ listening on 0.0.0.0 — anyone on your network can control this instance; never expose to the internet"). This option to expose ForgeTick is for the headless use for the "home server" scenario. This option justifies the authentication feature in V2.
 
-### Ports
-
-MVP has one instance on a fixed default port, the port is 18181 because it's memorable and avoid conflict with famous ports. For this MVP the first instance use port 18181, the port number increment by 1 for each new instance. V2 will have dynamic ports for supporting multi instances. For V2, on startup the server writes its port (and a PID) to a small runtime file; the CLI reads that file to find the instance. With multiple instances, each writes its own entry.
-Not now, not for this MVP, but a future choice would be how a V2 instance choose its ports. Two choices :
-
-- Scan upward from a base
-- Bind to port 0
+Exposure is per instance, not global: a paper instance can be reachable on the LAN while the production one stays on loopback.
 
 ### Third-party clients
 
 Third-party clients are a native consequence of the server-as-source-of-truth design: any program speaking the versioned HTTP+WebSocket contract is a valid client, indistinguishable from the built-in GUI/CLI. Preserved (not built) by three cheap disciplines already adopted — API versioning, treating the API as a public contract, and the free OpenAPI docs. No formal plugin system, client SDK, or client-auth in the MVP; the clean versioned API is the whole enabler.
 
-### LAN exposure
-
-Lan exposure on the network, by default the server is only on the machine — 127.0.0.1. An option in the settings can exposed the server to all network — 0.0.0.0. The app need to restart to enable this option. When this setting is change from 127.0.0.1 to 0.0.0.0, a warning should pop at the screen and another warning need to be next to the option. When ForgeTick starts in exposed mode, it should print a warning line in the launch terminal ("⚠ listening on 0.0.0.0 — anyone on your network can control this instance; never expose to the internet"). This option to exposed ForgeTick is for the headless use for the "home server" scenario. This option justify the authentication feature in V2.
-
 ### Authentication
 
-Authentication is introduced in V2, so only the clients with the right identity can control the server. Useful in the "home server" scenario with the server expose on the local network. The endpoints shapes are unchanged by this; instances simply gains an identity guard in front.
+Authentication is introduced in V2, so only the clients with the right identity can control the server. Useful in the "home server" scenario with the server exposed on the local network. The endpoint shapes are unchanged by this; instances simply gain an identity guard in front.
+
+### CLI shape
+
+Nine client commands plus `start`. The instance is a positional argument, with `-i` / `--instance` as the explicit alias for scripts:
+
+    forgetick start [instance]                    # create if needed, then run
+    forgetick run    <workflow> [instance]
+    forgetick stop   <workflow> [instance]
+    forgetick kill             [instance]
+    forgetick status           [instance]
+    forgetick list             [instance]
+    forgetick applogs          [instance]
+    forgetick workflowlogs     [instance]
+    forgetick tradelogs        [instance]
+    forgetick help
+
+When the instance is omitted and exactly one instance is running, that one is targeted. When several are running, the command fails and lists the names.
+
+The positional shape differs by command: `run` and `stop` take *workflow then instance*, the others take an instance only. `-i` is the unambiguous form for scripts.
 
 ## Logging
 
@@ -762,7 +824,7 @@ Residual loss window applies only to deaths the process cannot detect (power los
 
 - Three streams per instance, daily files, the merged prefixed launch-terminal view, three CLI streaming commands.
 - Two-week purge for app/workflow logs; NO purge for tradelogs.
-- Standard Python logging with default buffering per the policy above, plus the Error immediate flushes, plus the three explicit flush points (trade events, `engine_run_end`, `shutdown`)
+- Standard Python logging with default buffering per the policy above, plus the Error immediate flushes, plus the three explicit flush points (trade events, `engine_run_end`, `shutdown`).
 
 ### Logging Future-proofing
 

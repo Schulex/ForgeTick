@@ -71,6 +71,7 @@ Future features :
 - Third-party clients
 - Authentication
 - Per-stream logs retention settings
+- Workflow debug mode
 
 ### Node groups
 
@@ -398,21 +399,21 @@ Unlike STOPPED, completion cancels nothing: resting orders remain at the broker,
 
 A run is one activation of a workflow by a runner. It carries two identifiers, for two different readers.
 
-- The run name is the ergonomic handle, used by the CLI and the GUI. It is the workflow file's name by default.
-- The run id is 8 hex characters, generated at run start, written into every log line and stored in SQLite with the runner state.
+- **Run name** is the ergonomic handle, used by the CLI and the GUI. It default to the workflow file's name. Recycled once the run ends.
+- **Run id** is an 8 hex characters, generated at run start, written into every log line and stored in SQLite with the runner state. Never recycled.
 
-Names are for humans and get recycled; ids are for the audit trail and never do. Recovery uses the id to tie recovered orders back to the run that placed them. `grep run=a3f9c1d0 logs/trades/` returns exactly one run's orders, forever.
+Names are for humans and get recycled, ids are for the audit trail and never get recycled. Recovery uses the id to tie recovered orders back to the run that placed them. 
 
 ### Running the same workflow twice
 
-A workflow file is never locked. The user is free to run the same workflow on several instances at once, or several times inside one instance — for example one copy in production and a second copy on testnet to modify and compare. This is a feature, not an accident.
+A workflow file is never locked. The same workflow may run on several instances at once, or several times inside one instance — one copy in production, a second on testnet.
 
-Two safeguards, both cheap, neither of them a lock:
+Two safeguards, neither of them a lock:
 
-- Warning across instances. On run, ForgeTick reads the other instances' `runtime.json` in the same data directory, asks each live one `GET /api/v1/workflows/running`, and warns if the same workflow file is already running somewhere. Asking beats reading a file: a dead instance's `runtime.json` still claims it is running, a dead port answers nothing.
-- Auto-rename inside an instance. Run names must be unique within an instance, because `stop` targets a name and SQLite keys node state by it. A second run of `sma-cross` becomes `sma-cross-2`, then `-3`, skipping names already taken. Nothing on disk is copied or renamed — both runs load the same untouched JSON.
+- **Warning across instances.** On run, ForgeTick reads the other instances' `runtime.json` in the same data directory, asks each live one `GET /api/v1/workflows/running`, and warns if the workflow is already running. It asks rather than trusting the file, because a dead instance's `runtime.json` still claims it is running.
+- **Auto-rename inside an instance.** Run names are unique within an instance, since `stop` targets a name and SQLite keys node state by it. A second run of `sma-cross` becomes `sma-cross-2`, then `-3`, skipping taken names. Nothing on disk is copied or renamed.
 
-The assigned name is always echoed back: the CLI prints it, the GUI shows a popup at the moment of renaming. Otherwise the user's next `stop sma-cross` would kill the wrong run.
+The assigned name is echoed back: the CLI prints it, the GUI shows a popup at the moment of renaming.
 
 ### Graceful stop
 
@@ -426,7 +427,7 @@ Stop on the three time scales :
 
 ### Kill switch
 
-The kill switch is graceful-stop applied to every runner at once, inside one instance. It does not reach other instances — that is the point of instance isolation. Killing everything on the machine means killing each instance.
+The kill switch is graceful-stop applied to every runner at once inside one instance. It does not reach other instances.
 
 ### Two sources of truth
 
@@ -458,31 +459,131 @@ The validation of domain rules are on the editor level
 
 ## Persistence & recovery
 
-The app need to save the definition of the workflows and the running states.
+### What is stored where
 
-### JSON
+**Workflow JSON** — everything declarative: the graph, node configs, scheduler intervals, activation windows, the workflow's broker override, `max_missed_fires`.
 
-To be able to easily share workflows, the definition of workflows are save in a JSON.
+**SQLite**, at `instances/<name>/runtime.db` — one instance's runtime state:
 
-### SQLite
+- run bookkeeping — run ids, run names, lifecycle states
+- order records — what was sent, when, with which run id
+- per-domain — `last_fire_at`, `last_run_completed_at`, gate value and `changed_at`
+- node memory — the `self.prev_*` of stateful nodes
 
-SQLite save the states of running workflows. SQLite is the database where the running states are saved. One database per instance, at `instances/<name>/runtime.db`.
+Node memory is written but never read back on resume (§ Never resume using old data). It is kept for the GUI and for V2 hot resume.
 
-### Recovery is per-instance and local
+A trigger domain is identified by its scheduler node's id. One scheduler per domain, so no separate id space exists.
 
-There is no global recovery pass and nothing coordinates instances. Each instance owns its own `runtime.db` and its own logs, so starting an instance *is* recovery: it opens its own folder, decides whether the last shutdown was clean, and reconciles only its own orders against the broker. Three instances dying together is three independent recoveries.
+### Recovery model
 
-This is why recovery needs no flag and no special launch mode. `forgetick start prod-crypto` is the whole command, whether the last exit was clean or a crash.
+Recovery is per-instance and local. Each instance owns its own database and logs; starting an instance *is* recovery. There is no global recovery pass and no coordination between instances. `forgetick start <instance>` is the whole command, clean exit or crash.
 
-### Detecting an unclean shutdown
-
-A clean shutdown writes a shutdown line to applogs as its last act. The absence of that line at the end of the previous session is the unclean-shutdown detector. No heartbeat, no PID liveness check.
+A clean shutdown writes `component=server event=shutdown` to applogs as its last act, flushed immediately. Absence of that line is the unclean-shutdown detector.
 
 ### Measuring the downtime
 
-Downtime is `now − timestamp of the last log line`. No separate mechanism is needed: the logs already record when the instance was last alive.
+Death time comes from the first available source:
 
-The buffering policy (§ Logging) means the last line on disk can be slightly older than the real moment of death, since SIGKILL and power loss discard the buffer. This error is in the safe direction — downtime is overestimated, so the decision leans toward stopping. To bound it, workflowlogs flush at `engine_run_end`. The staleness is then at most one scheduler period, which is exactly the resolution the resume decision needs: a 1h-timeframe workflow tolerates a coarse answer, a 1min one gets a fine one, automatically.
+| Case                     | Source                       | Accuracy      |
+|--------------------------|------------------------------|--------------|
+| Clean shutdown           | `event=shutdown` timestamp   | exact         |
+| Crash, launcher survived | `exit_at` in `launcher.json` | exact         |
+| Power loss, hard reboot  | last log line timestamp      | over-estimate |
+
+For the power loss / hard reboot, the last log line is an over-estimate because the buffered `engine_run_start` is lost with the process, so the measurement includes the scheduler period and the engine time that preceded the crash. It errs toward stopping.
+
+`launcher.json` is written by the launcher before each restart:
+
+    {"exit_at": "2026-06-10T14:55:02.318Z", "exit_code": 134, "restart_n": 2}
+
+The server owns `runtime.json`, the launcher owns `launcher.json`; neither writes the other's file. `exit_at` is used only if it is more recent than the last log line.
+
+### When a scheduler fires
+
+    fires = window_open AND gate == 1
+
+| Window | Gate | Scheduler |
+|--------|------|-----------|
+| closed | 0    | off       |
+| closed | 1    | off       |
+| open   | 0    | off       |
+| open   | 1    | **on**    |
+
+Window edges are half-open, `[open, close)`: a fire at the opening instant happens, a fire at the closing instant does not.
+
+A gate's default value is 0; a domain whose gate has never been written does not fire and waits for the domain above it. Editor-level validation flags an unwired gate input, and a gate cycle in which every domain's gate is driven from inside the cycle (with default 0, such a cycle can never open). Initial gate values are logged at run start.
+
+### The resume decision
+
+    missed_fires = count of instants  anchor + k·Period  falling inside the active segments
+
+Counted in fires, not seconds. `P` is read from the scheduler node's config, never derived from log timestamps.
+
+Per active segment `[a, b)`, closed-form, not enumerated:
+
+    count = ⌊(b − anchor) / P⌋ − ⌊(a − anchor) / P⌋
+
+#### Active segments
+
+    active_segments = downtime_interval ∩ union(window occurrences) ∩ gate
+
+- Windows are expanded in their declared timezone, then converted to UTC, then intersected. Intersecting in UTC directly is wrong across DST transitions.
+- The gate is an all-or-nothing term (§ Gates).
+- With no windows and no gate, the single segment is the whole downtime.
+
+#### Phase anchoring
+
+- Segment continuing the phase in progress at death: `anchor = last_fire_at`.
+- Segment beginning at a window opening: `anchor = a`, the opening fire counts. This yields `⌈W/P⌉` fires for a window occurrence of length `W`.
+
+#### max_missed_fires
+
+Four levels, each defaulting to the level above:
+
+- ForgeTick level — `forgetick.toml`
+- Instance level — `instance.toml`
+- Workflow level — workflow JSON
+- Trigger domain level — workflow JSON
+
+Default: **1**.
+
+#### Composition
+
+Every trigger domain computes its own `missed_fires` against its own `max_missed_fires`. If any one exceeds its own threshold, the whole workflow stops.
+
+All domains are evaluated, including domains that place no orders. The decision is per-workflow: partial resume is incoherent, since a resumed domain would block waiting for messages from a stopped one.
+
+### Gates
+
+A gate is produced by a node at fire time. During downtime no node runs, so the gate is frozen at the value it held at death. SQLite keeps one row per gated scheduler, overwritten on change:
+
+| column              | meaning              |
+|---------------------|----------------------|
+| `scheduler_node_id` | the domain           |
+| `value`             | 0 or 1               |
+| `changed_at`        | when it last changed |
+
+No history and no retention policy.
+
+The stored value serves two questions:
+
+- **During the downtime** — the frozen value, used as the gate term in the intersection. A domain gated closed at death missed zero fires.
+- **On resume** — always 0, never the stored value.
+
+Recovery reads the frozen value first; the gate is reset afterwards.
+
+Gate changes are logged:
+
+    2026-06-10T14:23:05.081Z INFO workflow=market-mood run=a3f9c1d0 domain=sched-strat-a event=gate_changed value=0 source=llm-decide-1
+
+### Torn runs
+
+Per-node atomicity guarantees a node is never cut mid-execution. It does not cover a run cut mid-graph, which leaves a domain's node memory internally inconsistent.
+
+    torn = last_fire_at > last_run_completed_at
+
+A torn domain counts `+1` missed fire and is logged as torn at restart. Memory reset discards the inconsistent state; reconciliation catches any orphaned order.
+
 
 ### Shutdown
 

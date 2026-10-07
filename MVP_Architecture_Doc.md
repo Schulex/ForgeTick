@@ -2,15 +2,11 @@
 
 version : MVP
 
-## Overview
-
-### Presentation
+## Presentation
 
 The concept is to make the N8N / ComfyUI of the trading world. N8N and ComfyUI are node based app where you can create workflow by linking the nodes together to automate some process.
 The Idea is to create an app that use the power of node based workflow to automate trading orders and send them to the user's Broker.
 This app, called ForgeTick, sits between the user and the broker's API. The user will not use his logic to trade directly himself anymore, he will put his logic on a workflow. After this, ForgeTick will execute the workflow and send the trading order to the broker's API. The user will not anymore execute his logic and tell the trade order to the Broker, everything will be automated by the workflow he created using his logic.
-
-## Goal of this MVP Architecture Doc
 
 ## Vocabulary
 
@@ -28,7 +24,7 @@ This app, called ForgeTick, sits between the user and the broker's API. The user
 
 This architecture doc is only for the MVP. However there are future features that constrains the architecture of this MVP. The architecture of this MVP will deliberately be designed for these future features, but these features will not be built in the MVP.
 
-Architectural features for future features : (already needed for the future features)
+### Architectural features for future features : (already needed for the future features)
 
 - Engine and node apart, for being able to easily add node and custom node later
 - Three layers of the execution model, for non-sequential excution and trigger domains
@@ -36,9 +32,14 @@ Architectural features for future features : (already needed for the future feat
 - Registry between node class and node type, is to add custom node later
 - The abstract BrokerAdapter interface, is the extension point for multi-broker support
 - CCXT, already abstracts 100+ exchanges, non-CCXT brokers would implement the same interface differently inside.
+- Named instances, each instance is a server process, is the isolation unit: separate database, separate logs, separate credentials selection
+- Credential profiles referenced by name, so a paper instance has no path to live keys
+- `runtime.json` per instance, so a client can resolve an instance name to a port without a fixed port
+- `GET /api/v1/instance`, so a client can verify which instance it reached before acting on it
 - Run ids in every trade log line, so the permanent audit trail keys on something that is never recycled
+- Per-domain `last_fire_at` and `last_run_completed_at` in SQLite, so the resume decision counts fire instants and detects torn runs
 
-Future architectural features : (needed in the future for the future features)
+### Future architectural features : (needed in the future for the future features)
 
 - Node groups, is for node working together (entry + stop-loss or multi-leg orders)
 - Trigger domains, is for the non-sequential execution
@@ -52,8 +53,9 @@ Future architectural features : (needed in the future for the future features)
 - Logs rotation + compression, for managing huge amount of logs
 - Non-blocking logging, QueueHandler/QueueListener, for writing huge amount of logs
 - JSONL output option, for users feeding logs into external tooling
+- `adapter_api_version`, so a custom broker written against an old interface is refused instead of half-working
 
-Future features :
+### Future features :
 
 - Non-Sequential execution of workflows
 - Easily add new Brokers
@@ -62,16 +64,16 @@ Future features :
 - OpenClaw and LLM agent
 - Simulation mode
 - Custom nodes
-- Scheduler to runs the workflow at each market ticks
-- Scheduler to runs the workflow in a loop
-- Scheduler to runs at specific time
+- New Scheduler to runs the workflow at each market ticks
+- New Scheduler to runs the workflow in a loop
+- New Scheduler to runs at specific time
 - Scheduler Windows & gate
 - Large variety of nodes
 - Link to N8N
 - Third-party clients
 - Authentication
 - Per-stream logs retention settings
-- Workflow debug mode
+- Workflow debug mode with SQlite
 
 ### Node groups
 
@@ -186,7 +188,7 @@ Some node just have side effect instead of returning a something. However these 
 The "typed" part matters for the GUI: if an output port is type Number and an input port is type Candles, React Flow refuses to let you connect them. The types prevent nonsense wiring before it ever runs.
 Some node need memory, each node that need memory save its internal state to SQLite, that's the self.prev_*.
 
-Node state belongs to a run, not to a workflow file. Two runs of the same workflow start with fresh node instances and a node that needs history needs its warm-up again. This is correct, they are separate runs, but it means two copies of the same workflow do not agree until both are warm.
+Node state belongs to a run, not to a workflow file. Two runs of the same workflow start with fresh node instances, so a node that needs history warms up again in each.
 
 #### The base interface, in plain Python
 
@@ -584,29 +586,57 @@ Per-node atomicity guarantees a node is never cut mid-execution. It does not cov
 
 A torn domain counts `+1` missed fire and is logged as torn at restart. Memory reset discards the inconsistent state; reconciliation catches any orphaned order.
 
+### Never resume using old data
+
+> On resume, ForgeTick never continues from data gathered before the outage.
+
+Stateful nodes come back with memory reset and warm up again; gates come back at 0; candles are refetched. Resume is always cold — the choice is stop or resume-cold.
+
+State divides along the two-sources-of-truth line:
+
+- **Broker data** — positions, open orders, candles. Refetched on every restart without exception.
+- **Node data** — a node's internal memory. Reset on every restart.
+
+The rule has one boundary. Node memory recording an event with a money consequence — *"am I currently in a position?"* — must not be reset to false, because that re-enters a position already held. Such state does not belong to a node: it is market state, and `fetch_positions()` is where it comes from.
+
+In full: **reset all node memory; take all market state from the broker.**
+
+Of the MVP nodes, only Comparison in crossover mode holds memory (`prev_a`/`prev_b`, two fires to warm). SMA, EMA and RSI recompute from the refetched candle array.
+
+#### Downward traversal
+
+The engine only ever traverses a trigger domain downward. A gate wired from a node back to its own scheduler is not an exception: the gate is a mailbox deposit read at the next fire, not an edge the engine follows.
+
+This is the channel V2 will use to tell a node which kind of gap preceded a run — the scheduler passes it to the engine at fire time, the engine passes it down. Nothing travels upward.
 
 ### Shutdown
 
-Case 1 : Clean Shutdown
-This can append if Mathias intentionally stops the app. All of these must come
-back : workflow definitions, the current state of each running workflow node, open
-positions, and pending orders, recent log. When everything is back the app must
-choose between resume the workflows with correct states or stop properly the
-workflow and cancels all open orders via the broker. This decision depends on the
-downtime and the workflows. If a workflow trade on an hour timeframe and the
-downtime is only one minute the app need to resume the workflow and continue.
-However if a workflow trade on a minute timeframe and the downtime is 15 minutes
-the app need to stop properly the workflow and cancels all open orders via the
-broker.
-Case 2 : Unclean Shutdown
-This can append for multiple reason for example : crash, forced reboot of the
-computer, power outage… On restart the app do not blindly resume ! The state on
-disk might be stale, prices have moved, conditions have changed. Instead, the
-engine should detect “the last shutdown was unclean” and present Mathias a
-choice: cancel everything and start fresh, or resume and reconcile market state
-against the broker.
+**Clean.** Cancelling open orders, run the missed-fires decision, IF resume : reconciliation happens and resume cold. Death time is exact.
 
-In both case the app need to always reconcile market state against the broker. The broker is the only source of truth for the market state. Normaly after a clean shutdown this step is not useful, it's just always great to check and make sure. However after an unclean shutdown if the resume option is choosed it's mandatory to reconcile market state against the broker.
+**Unclean.** `on_unclean_restart` Cancelling open orders, run the missed-fires decision, IF resume : reconciliation happens and resume cold
+
+Cancelling open orders does NOT liquidate positions. Cancelling open orders requires `fetch_open_orders()`.
+
+In the future, the user will be able to choose between cold and hot resume depending of the case.
+
+### Auto-restart: the launcher
+
+A launcher file supervises one instance: it runs it, restarts it if it dies, and records when it died.
+
+- ForgeTick exits 0 on a stop command or Ctrl-C, non-zero otherwise. The launcher restarts only on non-zero, and traps SIGINT itself so a Ctrl-C reaching the process group is not read as a crash.
+- `exit_at` is written after each shutdown.
+- Backoff between attempts: 1s, 2s, 4s.
+- Stop after 5 consecutive crashes.
+- ForgeTick's output passes through untouched to the merged-log launch terminal.
+
+The crash counter resets when :
+
+- **Healthy pass** — every active scheduler before the shutdown in the instance has to complete two engine runs after the restart. ForgeTick emits `component=server event=instance_healthy`; the launcher watches for that line. Two runs, just to be sure and because some stateful node's first run cannot produce a signal.
+
+### Future-proofing
+
+- **Loop and Market Tick schedulers** — `missed_fires` does not apply: a Loop Scheduler's period is emergent (`run duration + delay`), a Market Tick Scheduler has none. Both need an absolute `max_downtime`, and an observed period (rolling median of fire-to-fire gaps) where the Time Interval Scheduler reads a declared one.
+- **Per-node cold/hot resume** — a per-node choice for each kind of gap (after a window opens, after a gate opens, after ForgeTick starts on clean or uncelan shutdown), each defaulting to cold. Deferred because the MVP's only stateful node warms in two fires. A torn domain must force cold regardless of its setting.
 
 ## Broker layer
 
@@ -677,10 +707,6 @@ An instance stores only the profile name, never the keys:
 Key rotation therefore touches one file whatever the number of instances, and an instance pointed at `binance-paper` has no path to live credentials.
 
 The default-broker model selects a profile, not a broker: a user may hold two accounts at the same exchange.
-
-(Two properties follow. Key rotation touches exactly one file, whatever the number of instances. And an instance pointed at `binance-paper` has no path to live credentials at all — "this instance physically cannot touch real money" becomes expressible, which a single shared config could never say.
-
-A profile, not a broker, is what the default-broker model actually selects: a user can hold two accounts at the same exchange, which "default broker" cannot express and "default profile" can.)
 
 ### Default Broker
 
